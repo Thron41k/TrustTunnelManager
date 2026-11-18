@@ -64,6 +64,10 @@ dotnet run --project TrustTunnelManager.Web
 
 Для локальной разработки используйте HTTPS-профиль из `Properties/launchSettings.json`.
 
+## Многосерверный режим
+
+Каждый сервер TrustTunnelManager будет управлять локальным TrustTunnel endpoint и подключаться к доверенным узлам по защищённому внутреннему API. Архитектурное решение, безопасность, владение конфигурацией и этапы реализации описаны в [docs/architecture/multi-node.md](docs/architecture/multi-node.md).
+
 ## Текущий этап
 
 - [x] Blazor Web App на .NET 10 с Interactive Server
