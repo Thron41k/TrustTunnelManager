@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Tomlyn" Version="2.11.1" />
     <ProjectReference Include="..\TrustTunnelManager.Application\TrustTunnelManager.Application.csproj" />
     <ProjectReference Include="..\TrustTunnelManager.Domain\TrustTunnelManager.Domain.csproj" />
   </ItemGroup>

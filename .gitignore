@@ -361,3 +361,16 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# TrustTunnelManager runtime state (SQLite, WAL and local data)
+**/App_Data/
+*.db
+*.db-shm
+*.db-wal
+
+# Runtime backups of TrustTunnel configuration
+*.toml.*.bak
+
+# Local environment-specific configuration and secrets
+appsettings.Local.json
+appsettings.Production.local.json

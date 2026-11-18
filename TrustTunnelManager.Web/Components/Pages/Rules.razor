@@ -1,0 +1,283 @@
+@page "/rules"
+@inject ITrustTunnelRulesManagementService RulesService
+@inject IAuditLog AuditLog
+@inject IJSRuntime JS
+@inject ILogger<Rules> Logger
+@inject AuthenticationStateProvider Authentication
+
+<PageTitle>Правила доступа — TrustTunnel Manager</PageTitle>
+
+<div class="page-heading">
+    <div>
+        <div class="eyebrow">CONNECTION FILTERING</div>
+        <h1>Правила доступа</h1>
+        <p>Правила проверяются по порядку. Применяется первое совпавшее правило.</p>
+    </div>
+    <button class="button-primary" @onclick="AddRule">＋ Добавить правило</button>
+</div>
+
+<div class="notice notice-warning">
+    Без совпавшего правила TrustTunnel разрешает соединение. Правило без условий является catch-all и влияет на все подключения.
+    После сохранения TrustTunnel будет перезапущен.
+</div>
+
+@if (!string.IsNullOrWhiteSpace(_message))
+{
+    <div class="notice notice-success">@_message</div>
+}
+@if (!string.IsNullOrWhiteSpace(_error))
+{
+    <div class="notice notice-error">@_error</div>
+}
+
+<section class="panel">
+    <div class="panel-heading">
+        <div>
+            <h2>Цепочка правил</h2>
+            <p>Порядок сверху вниз имеет значение.</p>
+        </div>
+        <div class="panel-actions">
+            <button class="button-secondary" @onclick="LoadAsync">Обновить</button>
+            <button class="button-primary" @onclick="SaveAsync" disabled="@_isSaving">
+                @(_isSaving ? "Применение..." : "Сохранить и применить")
+            </button>
+        </div>
+    </div>
+
+    @if (_isLoading)
+    {
+        <div class="empty-state">Загрузка правил...</div>
+    }
+    else if (_rules.Count == 0)
+    {
+        <div class="empty-state">Правила не заданы. Все подключения разрешены.</div>
+    }
+    else
+    {
+        <div class="rules-list">
+            @for (var index = 0; index < _rules.Count; index++)
+            {
+                var rule = _rules[index];
+                <article class="rule-card" @key="rule.Id">
+                    <div class="rule-order">
+                        <strong>@(index + 1)</strong>
+                        <div class="order-buttons">
+                            <button class="icon-button" title="Переместить вверх" disabled="@(index == 0)" @onclick="() => MoveRule(index, -1)">↑</button>
+                            <button class="icon-button" title="Переместить вниз" disabled="@(index == _rules.Count - 1)" @onclick="() => MoveRule(index, 1)">↓</button>
+                        </div>
+                    </div>
+                    <div class="rule-fields">
+                        <label class="form-field rule-action">
+                            <span>Действие</span>
+                            <select @bind="rule.Action">
+                                <option value="allow">Разрешить</option>
+                                <option value="deny">Запретить</option>
+                            </select>
+                        </label>
+                        <label class="form-field">
+                            <span>CIDR / IP</span>
+                            <input @bind="rule.Cidr" placeholder="192.168.1.0/24">
+                        </label>
+                        <label class="form-field">
+                            <span>Client Random Prefix</span>
+                            <input @bind="rule.ClientRandomPrefix" placeholder="aabbcc или a0b0/f0f0">
+                        </label>
+                        <label class="form-field full-width">
+                            <span>Client Random Auth Key</span>
+                            <input @bind="rule.ClientRandomAuthKey" autocomplete="off" placeholder="32–128 hex-символов">
+                        </label>
+                    </div>
+                    @if (string.IsNullOrWhiteSpace(rule.Cidr) &&
+                         string.IsNullOrWhiteSpace(rule.ClientRandomPrefix) &&
+                         string.IsNullOrWhiteSpace(rule.ClientRandomAuthKey))
+                    {
+                        <div class="rule-warning">
+                            Catch-all: правило применяется ко всем соединениям, не совпавшим с предыдущими.
+                            @if (index < _rules.Count - 1)
+                            {
+                                <strong>Все последующие правила станут недостижимыми.</strong>
+                            }
+                        </div>
+                    }
+                    <button class="button-small button-danger rule-remove" @onclick="() => RemoveRule(rule)">Удалить</button>
+                </article>
+            }
+        </div>
+    }
+
+    <div class="rules-footer">
+        <span>@_rules.Count правил</span>
+        <button class="button-primary" @onclick="SaveAsync" disabled="@_isSaving">
+            @(_isSaving ? "Применение..." : "Сохранить и применить")
+        </button>
+    </div>
+</section>
+
+@code {
+    private string _actor = "unknown";
+    private List<RuleEditorModel> _rules = [];
+    private bool _isLoading = true;
+    private bool _isSaving;
+    private string? _message;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await Authentication.GetAuthenticationStateAsync();
+        _actor = state.User.Identity?.Name ?? "unknown";
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _isLoading = true;
+        _error = null;
+
+        try
+        {
+            var rules = await RulesService.GetRulesAsync();
+            _rules = rules.Select(rule => new RuleEditorModel
+            {
+                Order = rule.Order,
+                Cidr = rule.Cidr ?? string.Empty,
+                ClientRandomPrefix = rule.ClientRandomPrefix ?? string.Empty,
+                ClientRandomAuthKey = rule.ClientRandomAuthKey ?? string.Empty,
+                Action = rule.Action
+            }).ToList();
+        }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Failed to load TrustTunnel rules.");
+            _error = exception.Message;
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void AddRule()
+    {
+        _rules.Add(new RuleEditorModel { Order = _rules.Count });
+        _message = null;
+        _error = null;
+    }
+
+    private void RemoveRule(RuleEditorModel rule)
+    {
+        _rules.Remove(rule);
+        NormalizeOrder();
+    }
+
+    private void MoveRule(int index, int direction)
+    {
+        var nextIndex = index + direction;
+
+        if (nextIndex < 0 || nextIndex >= _rules.Count)
+        {
+            return;
+        }
+
+        (_rules[index], _rules[nextIndex]) = (_rules[nextIndex], _rules[index]);
+        NormalizeOrder();
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = null;
+        _message = null;
+
+        if (_rules.Any(rule =>
+                !string.IsNullOrWhiteSpace(rule.ClientRandomPrefix) &&
+                !string.IsNullOrWhiteSpace(rule.ClientRandomAuthKey)))
+        {
+            _error = "В одном правиле нельзя одновременно использовать Prefix и Auth Key.";
+            return;
+        }
+
+        var catchAllIndex = _rules.FindIndex(rule =>
+            string.IsNullOrWhiteSpace(rule.Cidr) &&
+            string.IsNullOrWhiteSpace(rule.ClientRandomPrefix) &&
+            string.IsNullOrWhiteSpace(rule.ClientRandomAuthKey));
+
+        if (catchAllIndex >= 0 && catchAllIndex < _rules.Count - 1)
+        {
+            var confirmed = await JS.InvokeAsync<bool>(
+                "confirm",
+                "Catch-all правило стоит не последним: все следующие правила станут недостижимыми. Сохранить порядок?");
+            if (!confirmed)
+            {
+                return;
+            }
+        }
+
+        _isSaving = true;
+
+        try
+        {
+            NormalizeOrder();
+
+            var rules = _rules.Select(rule => new TrustTunnelAccessRule(
+                rule.Order,
+                NullIfEmpty(rule.Cidr),
+                NullIfEmpty(rule.ClientRandomPrefix),
+                NullIfEmpty(rule.ClientRandomAuthKey),
+                rule.Action)).ToArray();
+
+            await RulesService.ReplaceRulesAsync(rules);
+            await AuditLog.WriteAsync(
+                _actor,
+                "rules.replace",
+                "rules.toml",
+                true,
+                $"Сохранено правил: {rules.Length}.");
+
+            _message = "Правила сохранены. TrustTunnel успешно перезапущен.";
+            await LoadAsync();
+        }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Failed to save TrustTunnel rules.");
+            _error = exception.Message;
+
+            try
+            {
+                await AuditLog.WriteAsync(
+                    _actor,
+                    "rules.replace",
+                    "rules.toml",
+                    false,
+                    exception.Message);
+            }
+            catch (Exception auditException)
+            {
+                Logger.LogError(auditException, "Failed to record rules audit event.");
+            }
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private void NormalizeOrder()
+    {
+        for (var index = 0; index < _rules.Count; index++)
+        {
+            _rules[index].Order = index;
+        }
+    }
+
+    private static string? NullIfEmpty(string value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private sealed class RuleEditorModel
+    {
+        public Guid Id { get; } = Guid.NewGuid();
+        public int Order { get; set; }
+        public string? Cidr { get; set; }
+        public string? ClientRandomPrefix { get; set; }
+        public string? ClientRandomAuthKey { get; set; }
+        public string Action { get; set; } = "allow";
+    }
+}
