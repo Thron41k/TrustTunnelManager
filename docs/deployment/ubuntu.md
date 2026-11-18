@@ -16,6 +16,8 @@ systemctl cat trusttunnel-client.service
 
 Проверьте фактическое имя службы и путь конфигурации клиента. Если они отличаются от примеров, укажите свои значения в переменных окружения. Не подменяйте уже работающий `trusttunnel_client` новым сервером или endpoint: Manager управляет именно локальной клиентской службой.
 
+Установите `curl`, если он ещё не установлен: `sudo apt-get install -y curl`. Встроенный watchdog Manager использует его для HTTPS-проверки через VPN-интерфейс.
+
 ## Сертификат каждого узла
 
 Каждому Manager нужен отдельный TLS-сертификат с закрытым ключом. Один и тот же сертификат применяется Kestrel для HTTPS и отправляется как клиентский сертификат mTLS. Для production используйте сертификат доверенного CA с SAN, совпадающим с DNS-именем узла. Для уже выпущенного сертификата Let's Encrypt:
@@ -41,11 +43,14 @@ Mesh__AdvertisedBaseUrl=https://client-1.example.net:5080
 Mesh__IdentityCertificatePath=/etc/trusttunnelmanager/node-identity.pfx
 Mesh__IdentityCertificatePassword=REPLACE_WITH_PFX_PASSWORD
 Mesh__StateDirectory=/var/lib/trusttunnelmanager
-TrustTunnelClient__ServiceUnit=trusttunnel-client.service
-TrustTunnelClient__ConfigurationFile=/etc/trusttunnel/client.toml
+TrustTunnelClient__ServiceUnit=trusttunnel.service
+TrustTunnelClient__ConfigurationFile=/opt/trusttunnel_client/trusttunnel_client.toml
 TrustTunnelClient__NetworkInterface=tun0
 TrustTunnelClient__UseSudo=true
 TrustTunnelClient__UseSudoForJournalctl=true
+Watchdog__Enabled=true
+Watchdog__Interface=tun0
+Watchdog__ProbeUrl=https://www.cloudflare.com/cdn-cgi/trace
 ```
 
 На втором сервере укажите другое имя узла, свой HTTPS URL, свой сертификат и его пароль. AdvertisedBaseUrl должен быть достижим со второго узла и совпадать с SAN сертификата. Он должен содержать только origin, например `https://node-b.example.net:5080`, без пути и query.
@@ -126,6 +131,33 @@ sudo systemctl status trusttunnelmanager
 
 Откройте TCP 5080 только между доверенными серверами и административными сетями. Не завершайте TLS перед peer API: приложение проверяет клиентский сертификат непосредственно в TLS connection. Используйте прямой HTTPS или TCP passthrough. Не публикуйте порт peer API в общедоступный Интернет.
 
+## Встроенный VPN watchdog
+
+Manager автоматически проверяет доступность HTTPS через указанный интерфейс (по умолчанию `tun0`). Поведение соответствует прежнему скрипту watchdog:
+
+- первая проверка через 2 минуты после запуска Manager;
+- следующие проверки каждую минуту;
+- после трёх последовательных неудач Manager перезапускает заданный `TrustTunnelClient:ServiceUnit`;
+- автоматические перезапуски ограничены интервалом не чаще одного раза в 5 минут;
+- успешная проверка сбрасывает счётчик ошибок.
+
+Состояние проверки, ошибки и время последнего автоматического перезапуска отображаются в таблице узлов. Для просмотра удалённого watchdog оба узла должны работать на версии Manager с поддержкой watchdog.
+
+**Не удаляйте старый watchdog до успешной проверки нового.** После запуска Manager дождитесь в интерфейсе статуса «VPN доступен». Затем удалите старую systemd-службу и таймер:
+
+```bash
+sudo systemctl disable --now trusttunnel-watchdog.timer
+sudo systemctl stop trusttunnel-watchdog.service 2>/dev/null || true
+sudo rm -f /etc/systemd/system/trusttunnel-watchdog.service
+sudo rm -f /etc/systemd/system/trusttunnel-watchdog.timer
+sudo rm -f /usr/local/sbin/trusttunnel-watchdog.sh
+sudo rm -rf /run/trusttunnel-watchdog
+sudo systemctl daemon-reload
+sudo systemctl reset-failed trusttunnel-watchdog.service
+```
+
+Это не останавливает и не изменяет `trusttunnel.service`.
+
 ## Сопряжение
 
 1. Откройте Manager на целевом узле B и войдите под администратором.
@@ -140,8 +172,8 @@ sudo systemctl status trusttunnelmanager
 
 ```bash
 sudo journalctl -u trusttunnelmanager -f
-sudo journalctl -u trusttunnel-client.service -n 100 --no-pager
-sudo -u trusttunnelmanager sudo -n /usr/bin/systemctl show trusttunnel-client.service --no-pager
+sudo journalctl -u trusttunnel.service -n 100 --no-pager
+sudo -u trusttunnelmanager sudo -n /usr/bin/systemctl show trusttunnel.service --no-pager
 sudo visudo -cf /etc/sudoers.d/trusttunnelmanager
 ```
 
