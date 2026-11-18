@@ -102,6 +102,11 @@ builder.Services.AddSingleton<IPairingInvitationStore, PairingInvitationStore>()
 builder.Services.AddSingleton<IAuditLog, FileAuditLog>();
 builder.Services.AddSingleton<PeerRequestAuthenticator>();
 builder.Services.AddSingleton<ILocalTrustTunnelClientManager, SystemdTrustTunnelClientManager>();
+builder.Services.AddSingleton<TrustTunnelWatchdogService>();
+builder.Services.AddSingleton<ITrustTunnelWatchdogStatus>(
+    services => services.GetRequiredService<TrustTunnelWatchdogService>());
+builder.Services.AddHostedService<TrustTunnelWatchdogService>(
+    services => services.GetRequiredService<TrustTunnelWatchdogService>());
 builder.Services.AddSingleton<IPeerMeshService, PeerMeshService>();
 builder.Services.AddSingleton(identity);
 
@@ -295,12 +300,15 @@ app.MapGet("/internal/v1/status", async Task<IResult> (
     HttpContext context,
     PeerRequestAuthenticator authenticator,
     ILocalTrustTunnelClientManager local,
+    ITrustTunnelWatchdogStatus watchdog,
     CancellationToken ct) =>
 {
     if (await authenticator.AuthenticateAsync(context, ct) is null)
         return Results.Unauthorized();
 
-    return Results.Ok(await local.GetStatusAsync(ct));
+    return Results.Ok(new NodeStatusResponse(
+        await local.GetStatusAsync(ct),
+        watchdog.GetSnapshot()));
 });
 
 app.MapPost("/internal/v1/service/{action}", async Task<IResult> (
