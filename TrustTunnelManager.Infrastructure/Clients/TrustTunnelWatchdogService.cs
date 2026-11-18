@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.Logging;
 using TrustTunnelManager.Application.Abstractions;
 using TrustTunnelManager.Domain.Models;
 
