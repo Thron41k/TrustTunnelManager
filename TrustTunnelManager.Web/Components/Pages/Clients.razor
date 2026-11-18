@@ -448,7 +448,7 @@ else
 
             _exportContent = exported.Content;
             _qrImageDataUrl = exported.Format == "deeplink"
-                ? $"data:image/png;base64,{Convert.ToBase64String(PngByteQRCode.GetQRCode(exported.Content, QRCodeGenerator.ECCLevel.Q, 7))}"
+                ? $"data:image/png;base64,{Convert.ToBase64String(PngByteQRCodeHelper.GetQRCode(exported.Content, QRCodeGenerator.ECCLevel.Q, 7))}"
                 : null;
 
             await AuditLog.WriteAsync(

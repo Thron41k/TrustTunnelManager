@@ -9,6 +9,7 @@ using TrustTunnelManager.Application.Abstractions;
 using TrustTunnelManager.Infrastructure.Clients;
 using TrustTunnelManager.Infrastructure.Configuration;
 using TrustTunnelManager.Infrastructure.Processes;
+using TrustTunnelManager.Infrastructure.Monitoring;
 using TrustTunnelManager.Infrastructure.Rules;
 using TrustTunnelManager.Infrastructure.Systemd;
 using TrustTunnelManager.Web.Components;
