@@ -51,6 +51,8 @@ TrustTunnelClient__UseSudoForJournalctl=true
 Watchdog__Enabled=true
 Watchdog__Interface=tun0
 Watchdog__ProbeUrl=https://www.cloudflare.com/cdn-cgi/trace
+Watchdog__UseSudo=true
+Watchdog__SudoPath=/usr/bin/sudo
 ```
 
 На втором сервере укажите другое имя узла, свой HTTPS URL, свой сертификат и его пароль. AdvertisedBaseUrl должен быть достижим со второго узла и совпадать с SAN сертификата. Он должен содержать только origin, например `https://node-b.example.net:5080`, без пути и query.
@@ -76,12 +78,13 @@ sudo chmod 0660 /etc/trusttunnel/client.toml
 
 ## Ограниченный sudoers
 
-Создайте `/etc/sudoers.d/trusttunnelmanager` через `visudo`. Ниже показан пример для службы `trusttunnel-client.service`; замените имя unit и пути бинарных файлов на фактические:
+Создайте `/etc/sudoers.d/trusttunnelmanager` через `visudo`. Ниже показаны правила для существующей службы `trusttunnel.service` и проверки через `tun0`. При других значениях `Watchdog__Interface`, URL проверки или таймаутов измените строку `TTM_PROBE`, чтобы она точно соответствовала аргументам команды в конфигурации:
 
 ```sudoers
-Cmnd_Alias TTM_SYSTEMD = /usr/bin/systemctl show trusttunnel-client.service --no-pager *, /usr/bin/systemctl start trusttunnel-client.service, /usr/bin/systemctl stop trusttunnel-client.service, /usr/bin/systemctl restart trusttunnel-client.service
-Cmnd_Alias TTM_JOURNAL = /usr/bin/journalctl -u trusttunnel-client.service -n * --no-pager -o short-iso-precise
-trusttunnelmanager ALL=(root) NOPASSWD: TTM_SYSTEMD, TTM_JOURNAL
+Cmnd_Alias TTM_SYSTEMD = /usr/bin/systemctl show trusttunnel.service --no-pager *, /usr/bin/systemctl start trusttunnel.service, /usr/bin/systemctl stop trusttunnel.service, /usr/bin/systemctl restart trusttunnel.service
+Cmnd_Alias TTM_JOURNAL = /usr/bin/journalctl -u trusttunnel.service -n * --no-pager -o short-iso-precise
+Cmnd_Alias TTM_PROBE = /usr/bin/curl --interface tun0 --connect-timeout 5 --max-time 12 --silent --show-error --fail --output /dev/null --url https://www.cloudflare.com/cdn-cgi/trace
+trusttunnelmanager ALL=(root) NOPASSWD: TTM_SYSTEMD, TTM_JOURNAL, TTM_PROBE
 ```
 
 Wildcard в команде `systemctl show` разрешает только чтение свойств указанного unit; он нужен, чтобы sudoers корректно обработал список свойств, разделённых запятыми. Запуск/остановка/перезапуск и просмотр journald ограничены указанным unit. Проверьте фактические пути systemctl/journalctl и затем выполните `sudo visudo -cf /etc/sudoers.d/trusttunnelmanager`. Не выдавайте Manager произвольный sudo.
