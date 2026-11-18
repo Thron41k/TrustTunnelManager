@@ -1,0 +1,22 @@
+@page "/audit"
+@inject IAuditLog AuditLog
+
+<PageTitle>Аудит — TrustTunnel Manager</PageTitle>
+<div class="dashboard-page">
+    <header class="dashboard-header"><div><div class="eyebrow">SECURITY</div><h1>Аудит действий</h1><p class="page-description">Операции локальных и удалённых узлов</p></div></header>
+    <section class="panel clients-panel">
+        <div class="table-scroll"><table class="clients-table">
+            <thead><tr><th>Время UTC</th><th>Администратор</th><th>Исходный узел</th><th>Целевой узел</th><th>Операция</th><th>Результат</th><th>Детали</th></tr></thead>
+            <tbody>
+            @foreach (var item in _entries)
+            {
+                <tr><td>@item.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm:ss")</td><td>@item.Actor</td><td>@item.SourceNodeId</td><td>@item.TargetNodeId</td><td>@item.Action</td><td>@(item.Succeeded ? "Успешно" : "Ошибка")</td><td>@item.Details</td></tr>
+            }
+            </tbody>
+        </table></div>
+    </section>
+</div>
+@code {
+    private IReadOnlyList<AuditEntry> _entries = [];
+    protected override async Task OnInitializedAsync() => _entries = await AuditLog.GetRecentAsync(300);
+}

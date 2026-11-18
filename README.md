@@ -1,82 +1,48 @@
 # TrustTunnelManager
 
-Веб-панель для мониторинга и администрирования [TrustTunnel](https://github.com/TrustTunnel/TrustTunnel).
+Распределённая Web-панель управления **TrustTunnel Client** на нескольких Ubuntu-серверах.
 
-## Технологии
+## Целевая схема
 
-- .NET 10 LTS
-- ASP.NET Core Blazor Web App
-- Interactive Server
-- Clean Architecture
-- TrustTunnel Prometheus-compatible Metrics API
+На каждом сервере одновременно работают:
+- уже настроенный `trusttunnel_client` как systemd-служба;
+- собственный экземпляр TrustTunnelManager.
 
-## Структура решения
+Менеджеры равноправны. Из Web UI любого узла можно получить состояние всех сопряжённых узлов и управлять локальной или удалённой службой. Каждый менеджер является единственным владельцем локального клиента и его конфигурации.
 
-| Проект | Ответственность |
-| --- | --- |
-| `TrustTunnelManager.Domain` | Модели предметной области |
-| `TrustTunnelManager.Application` | Контракты и сценарии приложения |
-| `TrustTunnelManager.Infrastructure` | Интеграция с TrustTunnel и инфраструктурой |
-| `TrustTunnelManager.Web` | Blazor UI и композиция приложения |
+## Возможности
 
-## Мониторинг TrustTunnel
+- Состояние службы systemd, PID, потребление памяти, CPU time.
+- Опциональные RX/TX счётчики интерфейса из sysfs.
+- Запуск, остановка и перезапуск выбранного клиента.
+- Просмотр journald.
+- Просмотр и атомарное применение клиентской конфигурации с revision/hash, backup и rollback.
+- Сопряжение менеджеров одноразовым токеном на 5 минут.
+- mTLS с отдельным сертификатом узла и проверкой SHA-256 fingerprint.
+- Отзыв доверия к peer, локальный JSONL аудит.
+- Cookie-аутентификация UI администратора; пароли задаются через environment.
 
-На сервере TrustTunnel включите метрики в `vpn.toml`:
+## Безопасность
 
-```toml
-[metrics]
-address = "127.0.0.1:1987"
-request_timeout_secs = 3
-per_client_metrics = true
-```
+Нет API произвольного shell-выполнения. Peer API принимает только ограниченный набор операций и требует HTTPS + зарегистрированный клиентский сертификат. Pairing token одноразовый и используется только для первичной привязки сертификатов. Установите firewall между узлами и не публикуйте внутренний API в интернет.
 
-TrustTunnel предоставляет:
+## Запуск и публикация
 
-- `GET /health-check` — состояние endpoint;
-- `GET /metrics` — метрики Prometheus;
-- `GET /clients` — статистика по пользователям (только при `per_client_metrics = true`).
-
-**Безопасность:** интерфейс метрик TrustTunnel не имеет собственной авторизации. Не публикуйте порт метрик в интернет. При размещении Manager и endpoint на одной машине используйте loopback-адрес `127.0.0.1`. Для раздельного размещения используйте защищённый приватный канал и firewall.
-
-Адрес Metrics API настраивается в `TrustTunnelManager.Web/appsettings.json`:
-
-```json
-{
-  "TrustTunnel": {
-    "Metrics": {
-      "BaseAddress": "http://127.0.0.1:1987/",
-      "TimeoutSeconds": 3
-    }
-  }
-}
-```
-
-Счётчики трафика TrustTunnel накопительные и сбрасываются при перезапуске endpoint. Историческое хранение, графики скорости и аудит будут добавлены отдельным этапом.
-
-## Запуск
-
-Требуется .NET 10 SDK.
+Требуется .NET 10 SDK:
 
 ```bash
 dotnet restore TrustTunnelManager.slnx
+dotnet build TrustTunnelManager.slnx -c Release
 dotnet run --project TrustTunnelManager.Web
 ```
 
-Для локальной разработки используйте HTTPS-профиль из `Properties/launchSettings.json`.
+Для запуска обязательно задайте `Admin__Username`, `Admin__Password`, `Mesh__IdentityCertificatePath`, `Mesh__IdentityCertificatePassword` и `Mesh__AdvertisedBaseUrl`.
 
-## Многосерверный режим
+Полная инструкция для Ubuntu: [docs/deployment/ubuntu.md](docs/deployment/ubuntu.md). Архитектура и границы доверия: [docs/architecture/multi-node.md](docs/architecture/multi-node.md).
 
-Каждый сервер TrustTunnelManager будет управлять локальным TrustTunnel endpoint и подключаться к доверенным узлам по защищённому внутреннему API. Архитектурное решение, безопасность, владение конфигурацией и этапы реализации описаны в [docs/architecture/multi-node.md](docs/architecture/multi-node.md).
+## Ограничения первой версии
 
-## Текущий этап
-
-- [x] Blazor Web App на .NET 10 с Interactive Server
-- [x] Разделение Domain / Application / Infrastructure / Web
-- [x] Чтение health-check и Prometheus metrics
-- [x] Отображение активных сессий, TCP/UDP сокетов и трафика
-- [x] Отображение статистики пользователей при включённом per-client metrics
-- [ ] Авторизация администратора
-- [ ] Управление пользователями TrustTunnel
-- [ ] Управление правилами фильтрации
-- [ ] Управление systemd и просмотр journald
-- [ ] Историческое хранение метрик и аудит
+- Peer-каталог содержит прямые доверенные связи; для нескольких узлов настройте mesh-соединение между каждой парой. Транзитивная маршрутизация и репликация каталога отключены.
+- Историческая репликация метрик не реализована.
+- Конфигурация сохраняется как текст и не проходит версионно-зависимый TOML semantic validation; перед применением выполняется проверка revision, резервирование и попытка rollback при ошибке restart.
+- Для точного сетевого трафика укажите имя VPN-интерфейса в `TrustTunnelClient__NetworkInterface`.

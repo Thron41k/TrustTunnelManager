@@ -1,9 +1,18 @@
 ﻿@inherits LayoutComponentBase
 
-@Body
-
+<div class="app-shell">
+    <header class="app-topbar">
+        <a href="/nodes"><strong>TrustTunnel Manager</strong></a>
+        <nav class="sidebar-nav">
+            <NavLink href="/nodes">Узлы и управление клиентами</NavLink>
+            <NavLink href="/audit">Аудит</NavLink>
+            <a href="/logout">Выйти</a>
+        </nav>
+    </header>
+    <main class="app-content">@Body</main>
+</div>
 <div id="blazor-error-ui" data-nosnippet>
-    An unhandled error has occurred.
-    <a href="." class="reload">Reload</a>
-    <span class="dismiss">🗙</span>
+    Произошла ошибка приложения.
+    <a href="." class="reload">Перезагрузить</a>
+    <span class="dismiss">×</span>
 </div>

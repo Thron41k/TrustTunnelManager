@@ -1,0 +1,412 @@
+@page "/nodes"
+@implements IDisposable
+@inject IPeerMeshService Mesh
+@inject LocalNodeIdentity LocalIdentity
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<PageTitle>Узлы — TrustTunnel Manager</PageTitle>
+
+<div class="dashboard-page">
+    <header class="dashboard-header">
+        <div>
+            <div class="eyebrow">DISTRIBUTED TRUSTTUNNEL CLIENT MANAGEMENT</div>
+            <h1>Узлы кластера</h1>
+            <p class="page-description">Управление trusttunnel_client на этом и сопряжённых Ubuntu-серверах</p>
+        </div>
+        <div class="header-actions">
+            <button class="refresh-button" @onclick="RefreshAsync" disabled="@(_loading || _busy)">Обновить</button>
+        </div>
+    </header>
+
+    @if (!string.IsNullOrWhiteSpace(_message))
+    {
+        <div class="notice @(_error ? "notice-error" : "notice-warning")" role="status">@_message</div>
+    }
+
+    <section class="panel clients-panel">
+        <div class="panel-heading">
+            <div>
+                <h2>Доверенные узлы</h2>
+                <p>Удалённые операции выполняются менеджером-владельцем службы. Автообновление каждые 10 секунд.</p>
+            </div>
+            <span class="count-badge">@_nodes.Count</span>
+        </div>
+
+        @if (_loading && _nodes.Count == 0)
+        {
+            <div class="empty-state">Загрузка состояния узлов…</div>
+        }
+        else if (_nodes.Count == 0)
+        {
+            <div class="empty-state">Пока нет сопряжённых узлов</div>
+        }
+        else
+        {
+            <div class="table-scroll">
+                <table class="clients-table">
+                    <thead>
+                        <tr>
+                            <th>Узел</th>
+                            <th>Служба</th>
+                            <th>PID</th>
+                            <th>Память</th>
+                            <th>CPU time</th>
+                            <th>RX / TX</th>
+                            <th>Последний ответ</th>
+                            <th>Операции</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var node in _nodes)
+                    {
+                        <tr @key="node.Node.NodeId">
+                            <td>
+                                <strong>@node.Node.Name</strong>
+                                <div class="ip-cell">@node.Node.NodeId @(node.IsLocal ? "· локальный" : "· peer")</div>
+                                <div class="ip-cell">@node.Node.BaseUrl</div>
+                            </td>
+                            <td>
+                                <span class="status-indicator @(node.IsOnline && node.Service?.ActiveState == "active" ? "is-online" : "is-offline")"></span>
+                                @(node.IsStale ? "Недоступен" : node.Service?.ActiveState ?? "Нет данных")
+                                <div class="ip-cell">@node.Service?.SubState</div>
+                                @if (node.Service is { IsInstalled: false })
+                                {
+                                    <small>Служба не найдена</small>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(node.Service?.Error))
+                                {
+                                    <small>@node.Service.Error</small>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(node.Error))
+                                {
+                                    <small>@node.Error</small>
+                                }
+                            </td>
+                            <td>@(node.Service?.MainProcessId?.ToString() ?? "—")</td>
+                            <td>@FormatBytes(node.Service?.MemoryBytes)</td>
+                            <td>@FormatDuration(node.Service?.CpuTimeNanoseconds)</td>
+                            <td>@FormatBytes(node.Service?.RxBytes) / @FormatBytes(node.Service?.TxBytes)</td>
+                            <td>
+                                @(node.LastSeenAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "Нет данных")
+                                @if (node.IsStale)
+                                {
+                                    <div class="ip-cell">Состояние может быть устаревшим</div>
+                                }
+                            </td>
+                            <td>
+                                <div class="header-actions">
+                                    <button class="refresh-button" disabled="@(_busy || !node.IsOnline)" @onclick="() => StartAsync(node.Node.NodeId)">Старт</button>
+                                    <button class="refresh-button" disabled="@(_busy || !node.IsOnline)" @onclick="() => StopAsync(node.Node.NodeId)">Стоп</button>
+                                    <button class="refresh-button" disabled="@(_busy || !node.IsOnline)" @onclick="() => RestartAsync(node.Node.NodeId)">Перезапуск</button>
+                                    <button class="refresh-button" disabled="@(_busy || !node.IsOnline)" @onclick="() => SelectNodeAsync(node.Node.NodeId)">Детали</button>
+                                </div>
+                                @if (!node.IsLocal)
+                                {
+                                    <button class="logout-button" disabled="@_busy" @onclick="() => RemovePeerAsync(node.Node.NodeId)">Отозвать доверие</button>
+                                }
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+
+    <section class="dashboard-columns">
+        <article class="panel">
+            <div class="panel-heading">
+                <div>
+                    <h2>Сопряжение нового узла</h2>
+                    <p>Создайте приглашение на принимающем менеджере, затем используйте его здесь</p>
+                </div>
+            </div>
+            <p><strong>Идентификатор этого узла:</strong> @LocalIdentity.Info.NodeId</p>
+            <p><strong>HTTPS URL:</strong> @LocalIdentity.Info.BaseUrl</p>
+            <p><strong>SHA-256 fingerprint:</strong> <code>@LocalIdentity.Info.CertificateThumbprint</code></p>
+            <button class="refresh-button" @onclick="CreateInvitationAsync" disabled="@_busy">Создать одноразовое приглашение</button>
+            @if (!string.IsNullOrWhiteSpace(_invitation))
+            {
+                <p><strong>Токен действует 5 минут и используется один раз:</strong></p>
+                <code>@_invitation</code>
+            }
+
+            <label>HTTPS URL второго TrustTunnelManager</label>
+            <input class="form-control" @bind="_peerUrl" autocomplete="url" placeholder="https://node-b.example.com:5080" />
+            <label>SHA-256 fingerprint сертификата второго узла (64 hex-символа)</label>
+            <input class="form-control" @bind="_peerFingerprint" spellcheck="false" placeholder="A1B2..." />
+            <label>Одноразовый токен, созданный на втором узле</label>
+            <input class="form-control" @bind="_peerToken" autocomplete="off" />
+            <button class="refresh-button" @onclick="PairAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_peerToken))">Сопрячь узлы</button>
+        </article>
+
+        <article class="panel">
+            <div class="panel-heading">
+                <div>
+                    <h2>Конфигурация и журналы</h2>
+                    <p>Проверка revision, резервная копия, атомарная запись и перезапуск службы</p>
+                </div>
+            </div>
+            <label>Выбранный узел</label>
+            <select class="form-control" @bind="_selectedNodeId" @bind:after="LoadDetailsAsync">
+                @foreach (var node in _nodes)
+                {
+                    <option value="@node.Node.NodeId">@node.Node.Name</option>
+                }
+            </select>
+            <div class="header-actions">
+                <button class="refresh-button" @onclick="LoadDetailsAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_selectedNodeId))">Загрузить конфигурацию и журнал</button>
+                <button class="refresh-button" @onclick="SaveConfigurationAsync" disabled="@(_configuration is null || _busy)">Сохранить и перезапустить</button>
+            </div>
+            @if (_configuration is not null)
+            {
+                <small>Revision: @_configuration.Revision · загружено @_configuration.LoadedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</small>
+                <textarea class="form-control config-editor" @bind="_configurationContent" spellcheck="false"></textarea>
+            }
+            @if (_logs.Count > 0)
+            {
+                <div class="log-view">
+                    @foreach (var log in _logs)
+                    {
+                        <div><time>@log.Timestamp</time> @log.Message</div>
+                    }
+                </div>
+            }
+        </article>
+    </section>
+</div>
+
+@code {
+    private readonly CancellationTokenSource _disposeToken = new();
+    private List<NodeSnapshot> _nodes = [];
+    private List<NodeLogEntry> _logs = [];
+    private ClientConfigurationSnapshot? _configuration;
+    private string _configurationContent = string.Empty;
+    private string _selectedNodeId = string.Empty;
+    private string _peerUrl = string.Empty;
+    private string _peerFingerprint = string.Empty;
+    private string _peerToken = string.Empty;
+    private string? _invitation;
+    private string? _message;
+    private bool _error;
+    private bool _loading;
+    private bool _busy;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+        _ = PollAsync(_disposeToken.Token);
+    }
+
+    private async Task PollAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                await InvokeAsync(async () =>
+                {
+                    if (!_busy && !_loading)
+                        await RefreshAsync(clearMessage: false);
+                });
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    private async Task RefreshAsync() => await RefreshAsync(clearMessage: true);
+
+    private async Task RefreshAsync(bool clearMessage)
+    {
+        _loading = true;
+        try
+        {
+            _nodes = (await Mesh.GetClusterSnapshotAsync(_disposeToken.Token)).ToList();
+            if (_nodes.All(node => node.Node.NodeId != _selectedNodeId))
+                _selectedNodeId = _nodes.FirstOrDefault()?.Node.NodeId ?? string.Empty;
+
+            if (clearMessage)
+                _message = null;
+        }
+        catch (OperationCanceledException) when (_disposeToken.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            SetMessage(exception.Message, true);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private Task StartAsync(string nodeId) => RunActionAsync(nodeId, "start");
+    private Task StopAsync(string nodeId) => RunActionAsync(nodeId, "stop");
+    private Task RestartAsync(string nodeId) => RunActionAsync(nodeId, "restart");
+
+    private async Task RunActionAsync(string nodeId, string action)
+    {
+        _busy = true;
+        try
+        {
+            var result = await Mesh.ExecuteAsync(nodeId, action, await GetActorAsync(), _disposeToken.Token);
+            await RefreshAsync(clearMessage: false);
+            SetMessage(result.Message, !result.Success);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            SetMessage(exception.Message, true);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task CreateInvitationAsync()
+    {
+        _busy = true;
+        try
+        {
+            _invitation = await Mesh.CreateInvitationAsync(await GetActorAsync(), _disposeToken.Token);
+            SetMessage("Приглашение создано. Передайте токен, URL и fingerprint этого узла администратору второго узла.", false);
+        }
+        catch (Exception exception) { SetMessage(exception.Message, true); }
+        finally { _busy = false; }
+    }
+
+    private async Task PairAsync()
+    {
+        _busy = true;
+        try
+        {
+            var result = await Mesh.PairAsync(
+                _peerUrl, _peerToken, _peerFingerprint, await GetActorAsync(), _disposeToken.Token);
+
+            if (result.Success)
+            {
+                _peerToken = string.Empty;
+                _invitation = null;
+                await RefreshAsync(clearMessage: false);
+            }
+
+            SetMessage(result.Message, !result.Success);
+        }
+        catch (Exception exception) { SetMessage(exception.Message, true); }
+        finally { _busy = false; }
+    }
+
+    private async Task SelectNodeAsync(string nodeId)
+    {
+        _selectedNodeId = nodeId;
+        await LoadDetailsAsync();
+    }
+
+    private async Task LoadDetailsAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedNodeId))
+            return;
+
+        _busy = true;
+        _configuration = null;
+        _configurationContent = string.Empty;
+        _logs = [];
+        try
+        {
+            _configuration = await Mesh.GetConfigurationAsync(_selectedNodeId, _disposeToken.Token);
+            _configurationContent = _configuration.Content;
+            _logs = (await Mesh.GetLogsAsync(_selectedNodeId, 100, _disposeToken.Token)).ToList();
+            _message = null;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            SetMessage(exception.Message, true);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task SaveConfigurationAsync()
+    {
+        if (_configuration is null || string.IsNullOrWhiteSpace(_selectedNodeId))
+            return;
+
+        _busy = true;
+        try
+        {
+            var result = await Mesh.ApplyConfigurationAsync(
+                _selectedNodeId, _configurationContent, _configuration.Revision,
+                await GetActorAsync(), _disposeToken.Token);
+
+            if (result.Success)
+            {
+                await RefreshAsync(clearMessage: false);
+                await LoadDetailsAsync();
+            }
+
+            SetMessage(result.Message, !result.Success);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            SetMessage(exception.Message, true);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task RemovePeerAsync(string nodeId)
+    {
+        _busy = true;
+        try
+        {
+            var removed = await Mesh.RemovePeerAsync(nodeId, await GetActorAsync(), _disposeToken.Token);
+            await RefreshAsync(clearMessage: false);
+            SetMessage(removed ? "Доверие к узлу отозвано. На втором узле также нужно отозвать этот узел." : "Узел не найден.", !removed);
+        }
+        catch (Exception exception) { SetMessage(exception.Message, true); }
+        finally { _busy = false; }
+    }
+
+    private async Task<string> GetActorAsync()
+    {
+        var state = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        return state.User.Identity?.Name ?? "administrator";
+    }
+
+    private void SetMessage(string message, bool isError)
+    {
+        _message = message;
+        _error = isError;
+    }
+
+    private static string FormatBytes(long? bytes) =>
+        bytes is null ? "—" : FormatBytes(bytes.Value);
+
+    private static string FormatBytes(long bytes)
+    {
+        var value = Math.Max(0, (double)bytes);
+        string[] units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+        var index = 0;
+        while (value >= 1024 && index < units.Length - 1)
+        {
+            value /= 1024;
+            index++;
+        }
+
+        return $"{value:N1} {units[index]}";
+    }
+
+    private static string FormatDuration(long? nanoseconds) =>
+        nanoseconds is null ? "—" : TimeSpan.FromTicks(Math.Max(0, nanoseconds.Value / 100)).ToString("c");
+
+    public void Dispose()
+    {
+        _disposeToken.Cancel();
+        _disposeToken.Dispose();
+    }
+}
