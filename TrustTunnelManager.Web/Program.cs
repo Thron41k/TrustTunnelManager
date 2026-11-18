@@ -242,19 +242,25 @@ app.MapPost("/internal/v1/pairing/accept", async Task<IResult> (
 
     try
     {
-        // AddOrUpdate performs strict NodeId, HTTPS URL and fingerprint validation.
-        // Consume the invitation only after structural identity validation.
-        await peers.AddOrUpdateAsync(request.Node, ct);
+        PeerRegistry.ValidateNodeInfo(request.Node);
     }
     catch (InvalidDataException exception)
     {
         return Results.BadRequest(exception.Message);
     }
 
+    // Consume the invitation before mutating the registry. An invalid token must never
+    // be able to replace or remove an already trusted peer registration.
     if (!await invitations.TryConsumeAsync(request.InviteToken, ct))
-    {
-        await peers.RemoveAsync(request.Node.NodeId, ct);
         return Results.Unauthorized();
+
+    try
+    {
+        await peers.AddOrUpdateAsync(request.Node, ct);
+    }
+    catch (InvalidDataException exception)
+    {
+        return Results.BadRequest(exception.Message);
     }
 
     await audit.WriteAsync(new AuditEntry(

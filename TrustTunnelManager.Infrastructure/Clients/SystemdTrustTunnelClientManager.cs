@@ -97,6 +97,9 @@ public sealed partial class SystemdTrustTunnelClientManager : ILocalTrustTunnelC
     public async Task<ClientConfigurationSnapshot> GetConfigurationAsync(CancellationToken ct = default)
     {
         var path = ConfigPath();
+        if (File.Exists(path) && new FileInfo(path).Length > MaximumConfigurationLength)
+            throw new InvalidOperationException("Файл конфигурации превышает допустимый размер 1 МБ.");
+
         var content = File.Exists(path) ? await File.ReadAllTextAsync(path, ct) : string.Empty;
         return new(content, Revision(content), DateTimeOffset.UtcNow);
     }
@@ -107,7 +110,7 @@ public sealed partial class SystemdTrustTunnelClientManager : ILocalTrustTunnelC
         if (string.IsNullOrWhiteSpace(content) || content.Length > MaximumConfigurationLength)
             return new(false, "Конфигурация пуста или превышает 1 МБ.");
 
-        if (expectedRevision.Length != 64 || !expectedRevision.All(Uri.IsHexDigit))
+        if (string.IsNullOrEmpty(expectedRevision) || expectedRevision.Length != 64 || !expectedRevision.All(Uri.IsHexDigit))
             return new(false, "Некорректная revision конфигурации. Перечитайте файл перед сохранением.");
 
         await _configGate.WaitAsync(ct);
@@ -209,7 +212,7 @@ public sealed partial class SystemdTrustTunnelClientManager : ILocalTrustTunnelC
         }
     }
 
-    private async Task RestorePreviousConfigurationAsync(
+    private Task RestorePreviousConfigurationAsync(
         string path, string? backupPath, bool originalExists, UnixFileMode? originalMode)
     {
         if (originalExists && backupPath is not null)
@@ -222,6 +225,8 @@ public sealed partial class SystemdTrustTunnelClientManager : ILocalTrustTunnelC
         {
             File.Delete(path);
         }
+
+        return Task.CompletedTask;
     }
 
     private async Task<CommandResult> RunSystemctlAsync(IEnumerable<string> arguments, CancellationToken ct)

@@ -178,7 +178,6 @@
 
 @code {
     private readonly CancellationTokenSource _disposeToken = new();
-    private Task? _pollTask;
     private List<NodeSnapshot> _nodes = [];
     private List<NodeLogEntry> _logs = [];
     private ClientConfigurationSnapshot? _configuration;
@@ -196,7 +195,7 @@
     protected override async Task OnInitializedAsync()
     {
         await RefreshAsync();
-        _pollTask = PollAsync(_disposeToken.Token);
+        _ = PollAsync(_disposeToken.Token);
     }
 
     private async Task PollAsync(CancellationToken ct)

@@ -44,7 +44,7 @@ public sealed class PeerRegistry : IPeerRegistry
 
     public async Task AddOrUpdateAsync(NodeInfo node, CancellationToken cancellationToken = default)
     {
-        ValidateNode(node);
+        ValidateNodeInfo(node);
 
         var normalizedNode = node with
         {
@@ -82,7 +82,7 @@ public sealed class PeerRegistry : IPeerRegistry
         finally { _gate.Release(); }
     }
 
-    private static void ValidateNode(NodeInfo node)
+    public static void ValidateNodeInfo(NodeInfo node)
     {
         ArgumentNullException.ThrowIfNull(node);
 
