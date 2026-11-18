@@ -42,7 +42,8 @@ public enum WatchdogState
     Restarting,
     Restarted,
     RestartFailed,
-    Unsupported
+    Unsupported,
+    ConfigurationError
 }
 
 public sealed record WatchdogSnapshot(
