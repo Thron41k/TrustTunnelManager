@@ -1,0 +1,247 @@
+@page "/nodes"
+@implements IDisposable
+@inject IPeerMeshService Mesh
+@inject LocalNodeIdentity LocalIdentity
+
+<PageTitle>Узлы — TrustTunnel Manager</PageTitle>
+
+<div class="dashboard-page">
+    <header class="dashboard-header">
+        <div>
+            <div class="eyebrow">DISTRIBUTED TRUSTTUNNEL CLIENT MANAGEMENT</div>
+            <h1>Узлы кластера</h1>
+            <p class="page-description">Управление trusttunnel_client на этом и сопряжённых Ubuntu-серверах</p>
+        </div>
+        <div class="header-actions">
+            <button class="refresh-button" @onclick="RefreshAsync" disabled="@_loading">Обновить</button>
+        </div>
+    </header>
+
+    @if (!string.IsNullOrWhiteSpace(_message))
+    {
+        <div class="notice @(_error ? "notice-error" : "notice-warning")" role="status">@_message</div>
+    }
+
+    <section class="panel clients-panel">
+        <div class="panel-heading">
+            <div><h2>Доверенные узлы</h2><p>Удалённые операции выполняются менеджером-владельцем службы</p></div>
+            <span class="count-badge">@_nodes.Count</span>
+        </div>
+        @if (_loading && _nodes.Count == 0)
+        {
+            <div class="empty-state">Загрузка состояния узлов…</div>
+        }
+        else if (_nodes.Count == 0)
+        {
+            <div class="empty-state">Пока нет узлов</div>
+        }
+        else
+        {
+            <div class="table-scroll">
+                <table class="clients-table">
+                    <thead><tr><th>Узел</th><th>Служба</th><th>PID</th><th>Память</th><th>RX / TX</th><th>Операции</th></tr></thead>
+                    <tbody>
+                    @foreach (var node in _nodes)
+                    {
+                        <tr @key="node.Node.NodeId">
+                            <td>
+                                <strong>@node.Node.Name</strong>
+                                <div class="ip-cell">@node.Node.NodeId @(node.IsLocal ? "· локальный" : "· peer")</div>
+                            </td>
+                            <td>
+                                <span class="status-indicator @(node.IsOnline && node.Service?.ActiveState == "active" ? "is-online" : "is-offline")"></span>
+                                @(node.IsStale ? "Недоступен" : node.Service?.ActiveState ?? "Нет данных")
+                                <div class="ip-cell">@node.Service?.SubState</div>
+                            </td>
+                            <td>@(node.Service?.MainProcessId?.ToString() ?? "—")</td>
+                            <td>@FormatBytes(node.Service?.MemoryBytes)</td>
+                            <td>@FormatBytes(node.Service?.RxBytes) / @FormatBytes(node.Service?.TxBytes)</td>
+                            <td>
+                                <div class="header-actions">
+                                    <button class="refresh-button" disabled="@(!node.IsOnline)" @onclick="() => StartAsync(node.Node.NodeId)">Старт</button>
+                                    <button class="refresh-button" disabled="@(!node.IsOnline)" @onclick="() => StopAsync(node.Node.NodeId)">Стоп</button>
+                                    <button class="refresh-button" disabled="@(!node.IsOnline)" @onclick="() => RestartAsync(node.Node.NodeId)">Перезапуск</button>
+                                    <button class="refresh-button" disabled="@(!node.IsOnline)" @onclick="() => SelectNodeAsync(node.Node.NodeId)">Детали</button>
+                                </div>
+                                @if (!node.IsLocal)
+                                {
+                                    <button class="logout-button" @onclick="() => RemovePeerAsync(node.Node.NodeId)">Отозвать доверие</button>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(node.Error)) { <small>@node.Error</small> }
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+
+    <section class="dashboard-columns">
+        <article class="panel">
+            <div class="panel-heading"><div><h2>Сопряжение нового узла</h2><p>Создайте приглашение на целевом менеджере, затем используйте его здесь</p></div></div>
+            <p><strong>Идентификатор этого узла:</strong> @LocalIdentity.Info.NodeId</p>
+            <p><strong>HTTPS URL:</strong> @LocalIdentity.Info.BaseUrl</p>
+            <p><strong>SHA-256 fingerprint:</strong> <code>@LocalIdentity.Info.CertificateThumbprint</code></p>
+            <button class="refresh-button" @onclick="CreateInvitationAsync">Создать одноразовое приглашение</button>
+            @if (!string.IsNullOrWhiteSpace(_invitation))
+            {
+                <p><strong>Токен действует 5 минут и используется один раз:</strong></p>
+                <code>@_invitation</code>
+            }
+            <label>HTTPS URL второго TrustTunnelManager</label>
+            <input class="form-control" @bind="_peerUrl" placeholder="https://node-b.example.com:5080" />
+            <label>SHA-256 fingerprint сертификата второго узла (64 hex-символа)</label>
+            <input class="form-control" @bind="_peerFingerprint" placeholder="A1B2..." />
+            <label>Одноразовый токен, созданный на втором узле</label>
+            <input class="form-control" @bind="_peerToken" />
+            <button class="refresh-button" @onclick="PairAsync" disabled="@_busy">Сопрячь узлы</button>
+        </article>
+
+        <article class="panel">
+            <div class="panel-heading"><div><h2>Конфигурация и журналы</h2><p>Атомарное применение конфигурации с проверкой revision</p></div></div>
+            <label>Выбранный узел</label>
+            <select class="form-control" @bind="_selectedNodeId" @bind:after="LoadDetailsAsync">
+                @foreach (var node in _nodes) { <option value="@node.Node.NodeId">@node.Node.Name</option> }
+            </select>
+            <div class="header-actions">
+                <button class="refresh-button" @onclick="LoadDetailsAsync">Загрузить конфигурацию и журнал</button>
+                <button class="refresh-button" @onclick="SaveConfigurationAsync" disabled="@(_configuration is null || _busy)">Сохранить и перезапустить</button>
+            </div>
+            @if (_configuration is not null)
+            {
+                <small>Revision: @_configuration.Revision</small>
+                <textarea class="form-control config-editor" @bind="_configurationContent" spellcheck="false"></textarea>
+            }
+            @if (_logs.Count > 0)
+            {
+                <div class="log-view">
+                    @foreach (var log in _logs) { <div><time>@log.Timestamp</time> @log.Message</div> }
+                </div>
+            }
+        </article>
+    </section>
+</div>
+
+@code {
+    private List<NodeSnapshot> _nodes = [];
+    private List<NodeLogEntry> _logs = [];
+    private ClientConfigurationSnapshot? _configuration;
+    private string _configurationContent = string.Empty;
+    private string _selectedNodeId = string.Empty;
+    private string _peerUrl = string.Empty;
+    private string _peerFingerprint = string.Empty;
+    private string _peerToken = string.Empty;
+    private string? _invitation;
+    private string? _message;
+    private bool _error;
+    private bool _loading;
+    private bool _busy;
+
+    protected override async Task OnInitializedAsync() => await RefreshAsync();
+
+    private async Task RefreshAsync()
+    {
+        _loading = true;
+        try
+        {
+            _nodes = (await Mesh.GetClusterSnapshotAsync()).ToList();
+            if (string.IsNullOrWhiteSpace(_selectedNodeId) && _nodes.Count > 0)
+                _selectedNodeId = LocalIdentity.Info.NodeId;
+            _message = null;
+        }
+        catch (Exception ex) { SetMessage(ex.Message, true); }
+        finally { _loading = false; }
+    }
+
+    private Task StartAsync(string nodeId) => RunActionAsync(nodeId, "start");
+    private Task StopAsync(string nodeId) => RunActionAsync(nodeId, "stop");
+    private Task RestartAsync(string nodeId) => RunActionAsync(nodeId, "restart");
+
+    private async Task RunActionAsync(string nodeId, string action)
+    {
+        _busy = true;
+        try
+        {
+            var result = await Mesh.ExecuteAsync(nodeId, action, "administrator");
+            SetMessage(result.Message, !result.Success);
+            await RefreshAsync();
+        }
+        catch (Exception ex) { SetMessage(ex.Message, true); }
+        finally { _busy = false; }
+    }
+
+    private async Task CreateInvitationAsync()
+    {
+        _invitation = await Mesh.CreateInvitationAsync();
+        SetMessage("Приглашение создано. Передайте токен и адрес этого узла администратору второго узла.", false);
+    }
+
+    private async Task PairAsync()
+    {
+        _busy = true;
+        try
+        {
+            var result = await Mesh.PairAsync(_peerUrl, _peerToken, _peerFingerprint);
+            SetMessage(result.Message, !result.Success);
+            if (result.Success) { _peerToken = string.Empty; _invitation = null; await RefreshAsync(); }
+        }
+        catch (Exception ex) { SetMessage(ex.Message, true); }
+        finally { _busy = false; }
+    }
+
+    private async Task SelectNodeAsync(string nodeId)
+    {
+        _selectedNodeId = nodeId;
+        await LoadDetailsAsync();
+    }
+
+    private async Task LoadDetailsAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedNodeId)) return;
+        _busy = true;
+        try
+        {
+            _configuration = await Mesh.GetConfigurationAsync(_selectedNodeId);
+            _configurationContent = _configuration.Content;
+            _logs = (await Mesh.GetLogsAsync(_selectedNodeId, 100)).ToList();
+        }
+        catch (Exception ex) { SetMessage(ex.Message, true); }
+        finally { _busy = false; }
+    }
+
+    private async Task SaveConfigurationAsync()
+    {
+        if (_configuration is null || string.IsNullOrWhiteSpace(_selectedNodeId)) return;
+        _busy = true;
+        try
+        {
+            var result = await Mesh.ApplyConfigurationAsync(_selectedNodeId, _configurationContent,
+                _configuration.Revision, "administrator");
+            SetMessage(result.Message, !result.Success);
+            await RefreshAsync();
+            if (result.Success) await LoadDetailsAsync();
+        }
+        catch (Exception ex) { SetMessage(ex.Message, true); }
+        finally { _busy = false; }
+    }
+
+    private async Task RemovePeerAsync(string nodeId)
+    {
+        var result = await Mesh.RemovePeerAsync(nodeId);
+        SetMessage(result ? "Доверие к узлу отозвано." : "Узел не найден.", !result);
+        await RefreshAsync();
+    }
+
+    private void SetMessage(string message, bool isError) { _message = message; _error = isError; }
+    private static string FormatBytes(long? bytes) => bytes is null ? "—" : FormatBytes(bytes.Value);
+    private static string FormatBytes(long bytes)
+    {
+        var value = (double)bytes;
+        string[] units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+        var index = 0;
+        while (value >= 1024 && index < units.Length - 1) { value /= 1024; index++; }
+        return $"{value:N1} {units[index]}";
+    }
+    public void Dispose() { }
+}

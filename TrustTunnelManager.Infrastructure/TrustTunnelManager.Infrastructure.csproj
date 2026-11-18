@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="..\TrustTunnelManager.Application\TrustTunnelManager.Application.csproj" />
     <ProjectReference Include="..\TrustTunnelManager.Domain\TrustTunnelManager.Domain.csproj" />
   </ItemGroup>

@@ -1,0 +1,144 @@
+# Ubuntu deployment
+
+Выполните процедуру независимо на обоих Ubuntu-серверах. На каждом из них уже должен быть настроен свой trusttunnel_client как systemd-служба.
+
+## Подготовка
+
+Установите .NET 10 ASP.NET Core Runtime и создайте отдельную учётную запись Manager:
+
+```bash
+sudo useradd --system --home /var/lib/trusttunnelmanager --shell /usr/sbin/nologin trusttunnelmanager
+sudo install -d -o trusttunnelmanager -g trusttunnelmanager -m 0750 /var/lib/trusttunnelmanager
+sudo install -d -o root -g trusttunnelmanager -m 0750 /etc/trusttunnelmanager
+systemctl list-units --type=service | grep -i trusttunnel
+systemctl cat trusttunnel-client.service
+```
+
+Проверьте фактическое имя службы и путь конфигурации клиента. Если они отличаются от примеров, укажите свои значения в переменных окружения ниже.
+
+## Сертификат каждого узла
+
+Каждому Manager нужен отдельный TLS-сертификат с закрытым ключом. Один и тот же сертификат применяется Kestrel для HTTPS и отправляется как клиентский сертификат mTLS. Для production используйте сертификат доверенного CA с SAN, совпадающим с DNS-именем узла. Для уже выпущенного сертификата Lets Encrypt:
+
+```bash
+sudo openssl pkcs12 -export -out /etc/trusttunnelmanager/node-identity.pfx -inkey /etc/letsencrypt/live/client-1.example.net/privkey.pem -in /etc/letsencrypt/live/client-1.example.net/fullchain.pem
+sudo chown root:trusttunnelmanager /etc/trusttunnelmanager/node-identity.pfx
+sudo chmod 0640 /etc/trusttunnelmanager/node-identity.pfx
+openssl pkcs12 -in /etc/trusttunnelmanager/node-identity.pfx -clcerts -nokeys | openssl x509 -noout -fingerprint -sha256
+```
+
+Замените домен на свой. На втором сервере используйте его собственный сертификат. Не копируйте PFX между узлами. Пароль PFX защитите и задайте через environment. Сертификат собственной CA также подходит, если CA доверена браузерам администраторов.
+
+## Environment
+
+Создайте файл /etc/trusttunnelmanager/manager.env:
+
+```ini
+Admin__Username=admin
+Admin__Password=REPLACE_WITH_RANDOM_PASSWORD_AT_LEAST_16_CHARS
+Mesh__NodeName=ubuntu-client-1
+Mesh__AdvertisedBaseUrl=https://client-1.example.net:5080
+Mesh__IdentityCertificatePath=/etc/trusttunnelmanager/node-identity.pfx
+Mesh__IdentityCertificatePassword=REPLACE_WITH_PFX_PASSWORD
+Mesh__StateDirectory=/var/lib/trusttunnelmanager
+TrustTunnelClient__ServiceUnit=trusttunnel-client.service
+TrustTunnelClient__ConfigurationFile=/etc/trusttunnel/client.toml
+TrustTunnelClient__NetworkInterface=tun0
+TrustTunnelClient__UseSudo=true
+TrustTunnelClient__UseSudoForJournalctl=true
+```
+
+На втором сервере укажите другое имя узла, свой HTTPS URL, свой сертификат и его пароль. AdvertisedBaseUrl должен быть достижим со второго узла и совпадать с SAN сертификата.
+
+```bash
+sudo chown root:trusttunnelmanager /etc/trusttunnelmanager/manager.env
+sudo chmod 0640 /etc/trusttunnelmanager/manager.env
+```
+
+## Права на конфигурацию клиента
+
+Менеджер создаёт временный файл рядом с конфигурацией и заменяет исходный атомарным rename. Поэтому он должен иметь права записи в каталог, а сам trusttunnel_client должен иметь права чтения нового файла. Рекомендуется общая группа:
+
+```bash
+sudo groupadd --system trusttunnel-config
+sudo usermod -aG trusttunnel-config trusttunnelmanager
+# При необходимости добавьте пользователя службы trusttunnel_client в эту группу.
+sudo chown root:trusttunnel-config /etc/trusttunnel
+sudo chmod 2770 /etc/trusttunnel
+sudo chown root:trusttunnel-config /etc/trusttunnel/client.toml
+sudo chmod 0660 /etc/trusttunnel/client.toml
+```
+
+## Ограниченный sudoers
+
+Создайте /etc/sudoers.d/trusttunnelmanager через visudo и замените unit, если у вас другое имя:
+
+```sudoers
+Cmnd_Alias TTM_SYSTEMD = /usr/bin/systemctl show trusttunnel-client.service --no-pager --property=LoadState,ActiveState,SubState,MainPID,MemoryCurrent,CPUUsageNSec, /usr/bin/systemctl start trusttunnel-client.service, /usr/bin/systemctl stop trusttunnel-client.service, /usr/bin/systemctl restart trusttunnel-client.service
+Cmnd_Alias TTM_JOURNAL = /usr/bin/journalctl -u trusttunnel-client.service -n * --no-pager -o short-iso-precise
+trusttunnelmanager ALL=(root) NOPASSWD: TTM_SYSTEMD, TTM_JOURNAL
+```
+
+Проверьте фактические пути systemctl/journalctl и разрешённые аргументы. Не выдавайте Manager произвольный sudo.
+
+## Установка Manager
+
+```bash
+dotnet publish TrustTunnelManager.Web/TrustTunnelManager.Web.csproj -c Release -o /opt/trusttunnelmanager
+sudo chown -R root:root /opt/trusttunnelmanager
+```
+
+Создайте /etc/systemd/system/trusttunnelmanager.service:
+
+```ini
+[Unit]
+Description=TrustTunnel Manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=trusttunnelmanager
+Group=trusttunnelmanager
+WorkingDirectory=/opt/trusttunnelmanager
+EnvironmentFile=/etc/trusttunnelmanager/manager.env
+Environment=ASPNETCORE_URLS=https://0.0.0.0:5080
+ExecStart=/usr/bin/dotnet /opt/trusttunnelmanager/TrustTunnelManager.Web.dll
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/trusttunnelmanager /etc/trusttunnel
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now trusttunnelmanager
+sudo systemctl status trusttunnelmanager
+```
+
+Откройте TCP 5080 только между доверенными серверами и административными сетями. Не завершайте TLS перед Kestrel для peer API: приложение проверяет клиентский сертификат непосредственно в TLS connection. Используйте прямой HTTPS или TCP passthrough. Не публикуйте порт peer API в общедоступный Интернет.
+
+## Сопряжение
+
+1. Откройте Manager на целевом узле B и войдите под администратором.
+2. В разделе «Узлы кластера» нажмите «Создать одноразовое приглашение».
+3. Передайте администратору узла A HTTPS URL узла B, SHA-256 fingerprint сертификата B и токен. Токен действует пять минут и может быть использован только один раз.
+4. На узле A введите URL узла B, его fingerprint и токен, затем нажмите «Сопрячь узлы».
+5. После успешного сопряжения оба Manager сохраняют идентификатор и сертификат второго узла. Проверьте доступность обоих узлов в обоих интерфейсах.
+
+Для кластера более чем из двух узлов создайте прямое сопряжение каждой пары. Транзитивная маршрутизация в этой версии не включена.
+
+## Диагностика
+
+```bash
+sudo journalctl -u trusttunnelmanager -f
+sudo journalctl -u trusttunnel-client.service -n 100 --no-pager
+sudo -u trusttunnelmanager sudo -n /usr/bin/systemctl show trusttunnel-client.service --no-pager
+```
+
+Проверьте DNS и маршрут, firewall, AdvertisedBaseUrl, SAN и SHA-256 fingerprint сертификата, синхронизацию времени, срок приглашения, имя systemd unit, путь конфигурации, файловые права и sudoers.

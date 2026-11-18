@@ -1,149 +1,48 @@
-# Multi-node architecture
+# Distributed TrustTunnel Client Manager
 
-## Requirement
+## Deployment model
 
-TrustTunnelManager must support a group of machines running TrustTunnel endpoints.
-Every machine runs its own TrustTunnelManager instance. An administrator can open
-the UI on any machine and monitor and manage every trusted node in the group.
+Every Ubuntu host runs both:
+- the existing `trusttunnel_client` systemd unit;
+- one TrustTunnelManager instance that owns and controls only that local client.
 
-The system is symmetric: there is no mandatory permanent primary manager.
+There is no master node. The web UI talks only to its local Manager. A Manager routes remote reads and commands to the direct peer that owns the target service. Peer-to-peer links use HTTPS, a client certificate, and SHA-256 certificate pinning in both directions.
 
-## Terminology
+## Pairing
 
-- **Node** — one machine participating in the group.
-- **Local endpoint** — the TrustTunnel endpoint process controlled by the Manager
-  installed on the same machine.
-- **Peer** — another trusted node and its internal management API.
-- **Cluster** — the set of mutually trusted nodes.
+1. Configure a valid HTTPS certificate (PFX) and unique advertised HTTPS URL on each Manager.
+2. Open **Узлы и управление клиентами** on the receiving Manager and create a one-time invitation. It expires after five minutes.
+3. On the other Manager, enter the invitation URL, token and the receiving Manager certificate SHA-256 fingerprint.
+4. The joining Manager sends its own certificate and NodeId. The receiver validates the single-use token and the presented certificate fingerprint, stores the peer, and returns its identity. The joining Manager pins and stores the returned peer.
+5. The connection is now bidirectional. Revoking a peer removes its fingerprint from the local trust store. Perform revocation on both nodes to remove trust in both directions.
 
-## Topology
+The pairing token is a bootstrap credential, not an administrator password. It is stored hashed and consumed once.
 
-Each machine runs:
+## Security boundaries
 
-1. TrustTunnel endpoint.
-2. TrustTunnelManager Web application.
-3. A local management core that owns access to local configuration files,
-   local systemd service and local journald.
-4. An internal node API used only for Manager-to-Manager communication.
-
-The browser communicates only with the local Manager. The local Manager reads
-its own endpoint directly and sends remote operations to the owning peer's
-internal node API.
-
-```text
-Browser on Node A                  Browser on Node B
-       |                                  |
-       v                                  v
-+----------------------+         +----------------------+
-| TrustTunnelManager A |<------->| TrustTunnelManager B |
-| UI + local core      |  mTLS   | UI + local core      |
-+----------------------+         +----------------------+
-       |                                  |
-       v                                  v
- TrustTunnel endpoint A            TrustTunnel endpoint B
-       |                                  |
-    Clients A                          Clients B
-```
-
-The diagram extends horizontally to any number of nodes.
+- Peer API endpoints require HTTPS and a presented client certificate whose SHA-256 fingerprint is registered.
+- Outbound calls present the local certificate and validate the server certificate against the stored fingerprint.
+- Pairing is the only endpoint that accepts a not-yet-pinned certificate; it requires the one-use invitation and checks that the certificate fingerprint equals the joining NodeInfo fingerprint.
+- The browser never connects directly to a peer API.
+- The API exposes a fixed set of status, service-control, log and configuration operations. There is no generic shell execution endpoint.
+- systemctl/journalctl are invoked with argument lists (no shell). Sudoers must allow only the configured service unit and required read operations.
+- Each local web UI requires an administrator password from the environment. Never expose it without HTTPS.
+- Keep the peer HTTPS listener on a private network/VPN or restrict it with a firewall.
 
 ## Ownership and consistency
 
-A node is the single authoritative owner of its local TrustTunnel configuration
-and service lifecycle.
+Only the Manager running on a host may read/write its local client configuration and invoke its systemd unit. Remote changes include an expected SHA-256 revision. A stale revision is rejected. Configuration writes create a timestamped backup, use a temporary file and atomic rename, then restart the local service. A failed restart restores the backup and attempts to restart the previous configuration.
 
-- A command targeting Node A is executed only by Node A's local management core.
-- A peer must never edit another node's TOML files over a network share.
-- Remote commands are routed to the owning node's internal API.
-- Configuration changes use validation, backups, atomic file replacement and
-  an explicit apply/restart result.
-- Each configuration has a revision or content hash. A write must include the
-  expected revision to prevent lost updates.
-- If a peer is offline, its data is marked stale/unavailable and commands are
-  not queued or reported as successful unless durable command queuing is
-  explicitly implemented later.
+If a peer is unavailable it is marked offline/stale and operations fail immediately; no success is fabricated and no command is queued.
 
-This avoids competing writers and split-brain configuration state.
+## Monitoring
 
-## Peer enrollment and transport security
+The manager displays service state, PID, memory, CPU time, and optional RX/TX byte counters for the configured Linux network interface (read from sysfs). TrustTunnel Client does not expose the TrustTunnel Endpoint Metrics API; the manager therefore does not query the endpoint's unauthenticated metrics listener.
 
-Peer communication is a privileged management channel, not a public endpoint.
+The initial implementation stores audit records locally as JSONL. Each peer records the source node, target node, actor, action, result and UTC timestamp. Audit replication/history federation is not implemented in this first release.
 
-Required design:
+## Limits
 
-- Bind the internal API to a private interface, VPN interface, or loopback behind
-  an authenticated reverse proxy. Never expose it unauthenticated to the public
-  Internet.
-- Use mutual TLS (mTLS) with a distinct identity/certificate for each node.
-- Pair nodes using a short-lived, single-use enrollment token exchanged out of
-  band. The pairing operation verifies and pins the peer identity.
-- Support certificate rotation and peer revocation.
-- Apply explicit authorization scopes to remote operations.
-- Rate-limit requests and validate all payloads.
-- Keep metrics and internal management APIs separate from the public VPN listener.
-
-The current TrustTunnel metrics endpoint itself has no authentication. It must
-remain on loopback/private trusted networking and must not be exposed as the
-cluster management API.
-
-## Identity and audit
-
-An administrator signs in to the local Manager UI. Manager-to-Manager requests
-are authenticated with node identities, and carry a verifiable actor context
-so the receiving node can record who initiated a remote action.
-
-Every privileged operation must be audited on the owning node with:
-
-- UTC timestamp;
-- administrator identity;
-- source node;
-- target node;
-- operation and affected resource;
-- result and error details;
-- configuration revision before and after the operation.
-
-Node credentials must never be treated as administrator credentials.
-
-## Monitoring and history
-
-Each Manager can aggregate live snapshots from all configured peers.
-
-- Every sample is tagged with NodeId.
-- Dashboards support both cluster-wide totals and filtering by node.
-- Offline peers are shown explicitly; old values must be marked stale, not
-  displayed as current.
-- The existing TrustTunnel counters are cumulative only for the lifetime of
-  the endpoint process and reset after restart.
-- Each Manager stores its own collected history initially. History replication
-  is not required for the first multi-node release.
-- Traffic rates are calculated from counter deltas, handling counter resets
-  after endpoint restarts.
-
-## Peer catalogue
-
-The cluster catalogue must converge across the trusted nodes so that adding a
-node from one Manager makes it visible in the other Managers. Membership changes
-must be authenticated, versioned and auditable.
-
-For the initial two-node implementation, a pairing workflow may establish
-the bidirectional trust relationship and exchange the current node catalogue.
-The model must not assume that there will only ever be two nodes.
-
-## Initial implementation sequence
-
-1. Introduce a stable NodeId and local-node settings.
-2. Extract local endpoint operations behind application interfaces.
-3. Add the internal node API and mTLS authentication.
-4. Add peer pairing, listing, health and revocation.
-5. Add a cluster view that aggregates monitoring snapshots by NodeId.
-6. Route read-only remote queries to the owning peer.
-7. Route privileged commands to the owning peer, with optimistic concurrency
-   checks and audit.
-8. Add history collection per node and traffic-rate calculation.
-
-## Compatibility with the current dashboard
-
-The first metrics dashboard remains the local-node view. It must be refactored
-to use the same node abstraction that will later represent a remote peer.
-Do not hard-code the assumption that the TrustTunnel endpoint is local to the
-web UI into application/domain contracts.
+- Pairing creates a direct bidirectional trust link. For more than two nodes, pair each node with every other node; transitive routing/catalog propagation is not enabled.
+- Certificate renewal requires updating the pinned fingerprint on the peer (re-pair after revoking the old entry).
+- Configuration syntax is not parsed or validated against a particular trusttunnel_client version; the manager applies the supplied file as-is after revision checking. Keep a backup before editing.
