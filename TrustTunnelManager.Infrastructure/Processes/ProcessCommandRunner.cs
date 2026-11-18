@@ -5,9 +5,9 @@ namespace TrustTunnelManager.Infrastructure.Processes;
 
 internal sealed record ProcessCommandResult(int ExitCode, string StandardOutput, string StandardError);
 
-internal sealed class ProcessCommandRunner
+public sealed class ProcessCommandRunner
 {
-    public async Task<ProcessCommandResult> RunAsync(
+    internal async Task<ProcessCommandResult> RunAsync(
         string executable,
         IEnumerable<string> arguments,
         TimeSpan timeout,
