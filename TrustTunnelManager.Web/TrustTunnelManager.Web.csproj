@@ -7,4 +7,9 @@
     <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\TrustTunnelManager.Application\TrustTunnelManager.Application.csproj" />
+    <ProjectReference Include="..\TrustTunnelManager.Infrastructure\TrustTunnelManager.Infrastructure.csproj" />
+  </ItemGroup>
+
 </Project>
