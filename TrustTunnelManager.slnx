@@ -3,4 +3,5 @@
   <Project Path="TrustTunnelManager.Application/TrustTunnelManager.Application.csproj" />
   <Project Path="TrustTunnelManager.Infrastructure/TrustTunnelManager.Infrastructure.csproj" />
   <Project Path="TrustTunnelManager.Web/TrustTunnelManager.Web.csproj" />
+  <Project Path="TrustTunnelManager.Tests/TrustTunnelManager.Tests.csproj" />
 </Solution>

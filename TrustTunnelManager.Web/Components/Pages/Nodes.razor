@@ -402,7 +402,7 @@
     }
 
     private static string FormatDuration(long? nanoseconds) =>
-        nanoseconds is null ? "—" : TimeSpan.FromTicks(Math.Max(0, nanoseconds.Value / 100)).ToString("d\.hh\:mm\:ss");
+        nanoseconds is null ? "—" : TimeSpan.FromTicks(Math.Max(0, nanoseconds.Value / 100)).ToString("c");
 
     public void Dispose()
     {
