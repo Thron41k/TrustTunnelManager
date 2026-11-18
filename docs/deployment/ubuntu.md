@@ -87,7 +87,16 @@ Cmnd_Alias TTM_PROBE = /usr/bin/curl --interface tun0 --connect-timeout 5 --max-
 trusttunnelmanager ALL=(root) NOPASSWD: TTM_SYSTEMD, TTM_JOURNAL, TTM_PROBE
 ```
 
-Wildcard в команде `systemctl show` разрешает только чтение свойств указанного unit; он нужен, чтобы sudoers корректно обработал список свойств, разделённых запятыми. Запуск/остановка/перезапуск и просмотр journald ограничены указанным unit. Проверьте фактические пути systemctl/journalctl и затем выполните `sudo visudo -cf /etc/sudoers.d/trusttunnelmanager`. Не выдавайте Manager произвольный sudo.
+Wildcard в команде `systemctl show` разрешает только чтение свойств указанного unit; он нужен, чтобы sudoers корректно обработал список свойств, разделённых запятыми. Запуск/остановка/перезапуск и просмотр journald ограничены указанным unit. Команда `TTM_PROBE` разрешает только заданный HTTPS-запрос через `tun0`; watchdog вызывает sudo в non-interactive режиме. Проверьте фактические пути systemctl/journalctl/curl и затем выполните `sudo visudo -cf /etc/sudoers.d/trusttunnelmanager`.
+
+Проверьте разрешение команды от имени Manager до запуска службы:
+
+```bash
+sudo -u trusttunnelmanager sudo -n -- /usr/bin/curl --interface tun0 --connect-timeout 5 --max-time 12 --silent --show-error --fail --output /dev/null --url https://www.cloudflare.com/cdn-cgi/trace
+echo $?
+```
+
+Ожидаемый код возврата — `0`. Не выдавайте Manager произвольный sudo.
 
 ## Установка Manager
 
