@@ -28,7 +28,8 @@ public sealed record NodeSnapshot(
     bool IsStale,
     DateTimeOffset CollectedAtUtc,
     ClientServiceSnapshot? Service,
-    string? Error = null);
+    string? Error = null,
+    DateTimeOffset? LastSeenAtUtc = null);
 
 public sealed record ClientConfigurationSnapshot(
     string Content,

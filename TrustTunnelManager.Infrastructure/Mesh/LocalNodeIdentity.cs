@@ -14,7 +14,7 @@ public sealed class LocalNodeIdentity
     {
         var certificatePath = configuration["Mesh:IdentityCertificatePath"];
         if (string.IsNullOrWhiteSpace(certificatePath))
-            throw new InvalidOperationException("Set Mesh:IdentityCertificatePath to a PFX certificate path.");
+            throw new InvalidOperationException("Укажите Mesh:IdentityCertificatePath — путь к PFX сертификату узла.");
 
         if (!Path.IsPathRooted(certificatePath))
             certificatePath = Path.Combine(environment.ContentRootPath, certificatePath);
@@ -23,43 +23,89 @@ public sealed class LocalNodeIdentity
             certificatePath, configuration["Mesh:IdentityCertificatePassword"] ?? string.Empty,
             X509KeyStorageFlags.EphemeralKeySet);
 
-        if (!Certificate.HasPrivateKey || DateTime.UtcNow < Certificate.NotBefore.ToUniversalTime()
-            || DateTime.UtcNow > Certificate.NotAfter.ToUniversalTime())
-            throw new InvalidOperationException("The mesh identity certificate must be valid and contain a private key.");
+        var now = DateTime.UtcNow;
+        if (!Certificate.HasPrivateKey || now < Certificate.NotBefore.ToUniversalTime() ||
+            now > Certificate.NotAfter.ToUniversalTime())
+        {
+            Certificate.Dispose();
+            throw new InvalidOperationException("Сертификат mesh должен быть действующим и содержать закрытый ключ.");
+        }
 
         var stateDirectory = configuration["Mesh:StateDirectory"] ?? "App_Data";
         if (!Path.IsPathRooted(stateDirectory))
             stateDirectory = Path.Combine(environment.ContentRootPath, stateDirectory);
+
         Directory.CreateDirectory(stateDirectory);
+        SecureDirectory(stateDirectory);
 
         var identityPath = Path.Combine(stateDirectory, "node-identity.json");
-        string nodeId;
-        if (File.Exists(identityPath))
-        {
-            using var existing = JsonDocument.Parse(File.ReadAllText(identityPath));
-            nodeId = existing.RootElement.GetProperty("nodeId").GetString() ?? string.Empty;
-            if (!Guid.TryParse(nodeId, out _))
-                throw new InvalidDataException("Persisted NodeId is invalid.");
-        }
-        else
-        {
-            nodeId = Guid.NewGuid().ToString("D");
-            var temporary = identityPath + ".tmp";
-            File.WriteAllText(temporary, JsonSerializer.Serialize(new { nodeId }));
-            File.Move(temporary, identityPath, overwrite: true);
-        }
+        var nodeId = LoadOrCreateNodeId(identityPath);
 
         var name = configuration["Mesh:NodeName"];
-        if (string.IsNullOrWhiteSpace(name)) name = Environment.MachineName;
-        var baseUrl = configuration["Mesh:AdvertisedBaseUrl"];
-        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
-            throw new InvalidOperationException("Mesh:AdvertisedBaseUrl must be an absolute HTTPS URL.");
+        if (string.IsNullOrWhiteSpace(name))
+            name = Environment.MachineName;
+        name = name.Trim();
+        if (name.Length > 128)
+            throw new InvalidOperationException("Mesh:NodeName не должен превышать 128 символов.");
 
-        Info = new NodeInfo(nodeId, name.Trim(), uri.ToString().TrimEnd('/'),
+        var advertisedBaseUrl = configuration["Mesh:AdvertisedBaseUrl"];
+        if (!Uri.TryCreate(advertisedBaseUrl, UriKind.Absolute, out var uri) ||
+            uri.Scheme != Uri.UriSchemeHttps || string.IsNullOrWhiteSpace(uri.Host) ||
+            !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) ||
+            !string.IsNullOrEmpty(uri.Fragment) || uri.AbsolutePath != "/")
+        {
+            throw new InvalidOperationException(
+                "Mesh:AdvertisedBaseUrl должен быть HTTPS URL узла без пути, логина, query и fragment.");
+        }
+
+        Info = new NodeInfo(
+            nodeId,
+            name,
+            uri.GetLeftPart(UriPartial.Authority).TrimEnd('/'),
             NormalizeThumbprint(Certificate.GetCertHashString(HashAlgorithmName.SHA256)));
     }
 
     public static string NormalizeThumbprint(string value) =>
-        new(value.Where(c => !char.IsWhiteSpace(c) && c != ':' && c != '-')
-            .Select(char.ToUpperInvariant).ToArray());
+        new((value ?? string.Empty)
+            .Where(character => !char.IsWhiteSpace(character) && character is not ':' and not '-')
+            .Select(char.ToUpperInvariant)
+            .ToArray());
+
+    private static string LoadOrCreateNodeId(string identityPath)
+    {
+        if (File.Exists(identityPath))
+        {
+            using var existing = JsonDocument.Parse(File.ReadAllText(identityPath));
+            var nodeId = existing.RootElement.GetProperty("nodeId").GetString();
+            if (!Guid.TryParse(nodeId, out var id))
+                throw new InvalidDataException("Сохранённый NodeId имеет неверный формат.");
+            return id.ToString("D");
+        }
+
+        var newNodeId = Guid.NewGuid().ToString("D");
+        var temporaryPath = identityPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                if (OperatingSystem.IsLinux())
+                    File.SetUnixFileMode(temporaryPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                JsonSerializer.Serialize(stream, new { nodeId = newNodeId });
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(temporaryPath, identityPath, overwrite: false);
+            return newNodeId;
+        }
+        finally
+        {
+            try { File.Delete(temporaryPath); } catch (IOException) { }
+        }
+    }
+
+    private static void SecureDirectory(string path)
+    {
+        if (OperatingSystem.IsLinux())
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+    }
 }

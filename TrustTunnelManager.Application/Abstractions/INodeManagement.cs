@@ -44,7 +44,9 @@ public interface IPeerMeshService
     Task<OperationResult> ApplyConfigurationAsync(
         string nodeId, string content, string expectedRevision, string actor,
         CancellationToken cancellationToken = default);
-    Task<string> CreateInvitationAsync(CancellationToken cancellationToken = default);
-    Task<OperationResult> PairAsync(string baseUrl, string token, string expectedThumbprint, CancellationToken cancellationToken = default);
-    Task<bool> RemovePeerAsync(string nodeId, CancellationToken cancellationToken = default);
+    Task<string> CreateInvitationAsync(string actor, CancellationToken cancellationToken = default);
+    Task<OperationResult> PairAsync(
+        string baseUrl, string token, string expectedThumbprint, string actor,
+        CancellationToken cancellationToken = default);
+    Task<bool> RemovePeerAsync(string nodeId, string actor, CancellationToken cancellationToken = default);
 }
