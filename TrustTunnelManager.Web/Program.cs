@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Antiforgery;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc;
@@ -32,6 +33,19 @@ builder.WebHost.ConfigureKestrel(options =>
         https.ClientCertificateValidation = (_, _, _) => true;
     });
 });
+
+var stateDirectory = builder.Configuration["Mesh:StateDirectory"] ?? "App_Data";
+if (!Path.IsPathRooted(stateDirectory))
+    stateDirectory = Path.Combine(builder.Environment.ContentRootPath, stateDirectory);
+var dataProtectionDirectory = Path.Combine(stateDirectory, "data-protection-keys");
+Directory.CreateDirectory(dataProtectionDirectory);
+if (OperatingSystem.IsLinux())
+    File.SetUnixFileMode(dataProtectionDirectory,
+        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+builder.Services.AddDataProtection()
+    .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionDirectory))
+    .SetApplicationName("TrustTunnelManager");
 
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 builder.Services.AddAntiforgery(options =>

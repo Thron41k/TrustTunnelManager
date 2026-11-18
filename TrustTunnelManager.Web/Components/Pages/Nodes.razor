@@ -309,6 +309,9 @@
             return;
 
         _busy = true;
+        _configuration = null;
+        _configurationContent = string.Empty;
+        _logs = [];
         try
         {
             _configuration = await Mesh.GetConfigurationAsync(_selectedNodeId, _disposeToken.Token);

@@ -107,7 +107,8 @@ public sealed partial class SystemdTrustTunnelClientManager : ILocalTrustTunnelC
     public async Task<OperationResult> ApplyConfigurationAsync(
         string content, string expectedRevision, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(content) || content.Length > MaximumConfigurationLength)
+        if (string.IsNullOrWhiteSpace(content) ||
+            Encoding.UTF8.GetByteCount(content) > MaximumConfigurationLength)
             return new(false, "Конфигурация пуста или превышает 1 МБ.");
 
         if (string.IsNullOrEmpty(expectedRevision) || expectedRevision.Length != 64 || !expectedRevision.All(Uri.IsHexDigit))
@@ -304,19 +305,25 @@ public sealed partial class SystemdTrustTunnelClientManager : ILocalTrustTunnelC
 
     private static void PruneBackups(string path, int keep)
     {
-        var directory = Path.GetDirectoryName(path);
-        if (directory is null) return;
-
-        var prefix = Path.GetFileName(path) + ".";
-        var backups = new DirectoryInfo(directory).EnumerateFiles(prefix + "*.bak")
-            .OrderByDescending(file => file.LastWriteTimeUtc)
-            .Skip(keep);
-
-        foreach (var backup in backups)
+        try
         {
-            try { backup.Delete(); } catch (IOException) { }
-            catch (UnauthorizedAccessException) { }
+            var directory = Path.GetDirectoryName(path);
+            if (directory is null) return;
+
+            var prefix = Path.GetFileName(path) + ".";
+            var backups = new DirectoryInfo(directory).EnumerateFiles(prefix + "*.bak")
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .Skip(keep);
+
+            foreach (var backup in backups)
+            {
+                try { backup.Delete(); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
         }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     [GeneratedRegex(@"^[A-Za-z0-9_.@:-]{1,128}\.service$", RegexOptions.CultureInvariant)]
