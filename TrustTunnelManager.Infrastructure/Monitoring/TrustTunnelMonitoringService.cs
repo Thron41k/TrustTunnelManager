@@ -44,7 +44,7 @@ public sealed class TrustTunnelMonitoringService(HttpClient httpClient)
             {
                 return CreateOnlineSnapshot(
                     collectedAt,
-                    [],
+                    new Dictionary<string, long>(),
                     [],
                     warningMessage: $"Endpoint доступен, но метрики вернули HTTP {(int)metricsResponse.StatusCode}.");
             }
