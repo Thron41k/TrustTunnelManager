@@ -11,7 +11,7 @@ sudo useradd --system --home /var/lib/trusttunnelmanager --shell /usr/sbin/nolog
 sudo install -d -o trusttunnelmanager -g trusttunnelmanager -m 0750 /var/lib/trusttunnelmanager
 sudo install -d -o root -g trusttunnelmanager -m 0750 /etc/trusttunnelmanager
 systemctl list-units --type=service | grep -i trusttunnel
-systemctl cat trusttunnel-client.service
+systemctl cat trusttunnel.service
 ```
 
 Проверьте фактическое имя службы и путь конфигурации клиента. Если они отличаются от примеров, укажите свои значения в переменных окружения. Не подменяйте уже работающий `trusttunnel_client` новым сервером или endpoint: Manager управляет именно локальной клиентской службой.
@@ -64,17 +64,21 @@ sudo chmod 0640 /etc/trusttunnelmanager/manager.env
 
 ## Права на конфигурацию клиента
 
-Менеджер создаёт временный файл рядом с конфигурацией и заменяет исходный атомарным rename. Поэтому он должен иметь права записи в каталог, а сам `trusttunnel_client` должен иметь права чтения нового файла. Рекомендуется общая группа:
+Менеджер заменяет конфигурацию атомарно: временный файл создаётся рядом с исходным, затем выполняется rename. Поэтому приложению нужны права записи в родительский каталог, а службе клиента — чтения нового файла.
+
+**Не делайте каталог `/opt/trusttunnel_client` групповым writable**, если в нём лежит исполняемый файл `trusttunnel_client`: это позволит Manager заменить или удалить бинарный файл.
+
+Рекомендуемый вариант — хранить конфигурацию отдельно, например в `/etc/trusttunnel/client.toml`, и указывать этот абсолютный путь в параметре `-c` существующей службы. Для такого отдельного каталога можно использовать группу:
 
 ```bash
 sudo groupadd --system trusttunnel-config
 sudo usermod -aG trusttunnel-config trusttunnelmanager
-# При необходимости добавьте пользователя службы trusttunnel_client в эту группу.
-sudo chown root:trusttunnel-config /etc/trusttunnel
-sudo chmod 2770 /etc/trusttunnel
+sudo install -d -o root -g trusttunnel-config -m 2770 /etc/trusttunnel
 sudo chown root:trusttunnel-config /etc/trusttunnel/client.toml
 sudo chmod 0660 /etc/trusttunnel/client.toml
 ```
+
+После этого добавьте `SupplementaryGroups=trusttunnel-config` и `ReadWritePaths=/etc/trusttunnel` в unit Manager. Настройку самого `trusttunnel.service` выполняйте отдельно и только после резервного копирования его текущего unit и TOML-файла.
 
 ## Ограниченный sudoers
 
