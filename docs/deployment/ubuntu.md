@@ -11,10 +11,12 @@ sudo useradd --system --home /var/lib/trusttunnelmanager --shell /usr/sbin/nolog
 sudo install -d -o trusttunnelmanager -g trusttunnelmanager -m 0750 /var/lib/trusttunnelmanager
 sudo install -d -o root -g trusttunnelmanager -m 0750 /etc/trusttunnelmanager
 systemctl list-units --type=service | grep -i trusttunnel
-systemctl cat trusttunnel-client.service
+systemctl cat trusttunnel.service
 ```
 
 Проверьте фактическое имя службы и путь конфигурации клиента. Если они отличаются от примеров, укажите свои значения в переменных окружения. Не подменяйте уже работающий `trusttunnel_client` новым сервером или endpoint: Manager управляет именно локальной клиентской службой.
+
+Установите `curl`, если он ещё не установлен: `sudo apt-get install -y curl`. Встроенный watchdog Manager использует его для HTTPS-проверки через VPN-интерфейс.
 
 ## Сертификат каждого узла
 
@@ -41,11 +43,16 @@ Mesh__AdvertisedBaseUrl=https://client-1.example.net:5080
 Mesh__IdentityCertificatePath=/etc/trusttunnelmanager/node-identity.pfx
 Mesh__IdentityCertificatePassword=REPLACE_WITH_PFX_PASSWORD
 Mesh__StateDirectory=/var/lib/trusttunnelmanager
-TrustTunnelClient__ServiceUnit=trusttunnel-client.service
-TrustTunnelClient__ConfigurationFile=/etc/trusttunnel/client.toml
+TrustTunnelClient__ServiceUnit=trusttunnel.service
+TrustTunnelClient__ConfigurationFile=/opt/trusttunnel_client/trusttunnel_client.toml
 TrustTunnelClient__NetworkInterface=tun0
 TrustTunnelClient__UseSudo=true
 TrustTunnelClient__UseSudoForJournalctl=true
+Watchdog__Enabled=true
+Watchdog__Interface=tun0
+Watchdog__ProbeUrl=https://www.cloudflare.com/cdn-cgi/trace
+Watchdog__UseSudo=true
+Watchdog__SudoPath=/usr/bin/sudo
 ```
 
 На втором сервере укажите другое имя узла, свой HTTPS URL, свой сертификат и его пароль. AdvertisedBaseUrl должен быть достижим со второго узла и совпадать с SAN сертификата. Он должен содержать только origin, например `https://node-b.example.net:5080`, без пути и query.
@@ -57,29 +64,43 @@ sudo chmod 0640 /etc/trusttunnelmanager/manager.env
 
 ## Права на конфигурацию клиента
 
-Менеджер создаёт временный файл рядом с конфигурацией и заменяет исходный атомарным rename. Поэтому он должен иметь права записи в каталог, а сам `trusttunnel_client` должен иметь права чтения нового файла. Рекомендуется общая группа:
+Менеджер заменяет конфигурацию атомарно: временный файл создаётся рядом с исходным, затем выполняется rename. Поэтому приложению нужны права записи в родительский каталог, а службе клиента — чтения нового файла.
+
+**Не делайте каталог `/opt/trusttunnel_client` групповым writable**, если в нём лежит исполняемый файл `trusttunnel_client`: это позволит Manager заменить или удалить бинарный файл.
+
+Рекомендуемый вариант — хранить конфигурацию отдельно, например в `/etc/trusttunnel/client.toml`, и указывать этот абсолютный путь в параметре `-c` существующей службы. Для такого отдельного каталога можно использовать группу:
 
 ```bash
 sudo groupadd --system trusttunnel-config
 sudo usermod -aG trusttunnel-config trusttunnelmanager
-# При необходимости добавьте пользователя службы trusttunnel_client в эту группу.
-sudo chown root:trusttunnel-config /etc/trusttunnel
-sudo chmod 2770 /etc/trusttunnel
+sudo install -d -o root -g trusttunnel-config -m 2770 /etc/trusttunnel
 sudo chown root:trusttunnel-config /etc/trusttunnel/client.toml
 sudo chmod 0660 /etc/trusttunnel/client.toml
 ```
 
+После этого добавьте `SupplementaryGroups=trusttunnel-config` и `ReadWritePaths=/etc/trusttunnel` в unit Manager. Настройку самого `trusttunnel.service` выполняйте отдельно и только после резервного копирования его текущего unit и TOML-файла.
+
 ## Ограниченный sudoers
 
-Создайте `/etc/sudoers.d/trusttunnelmanager` через `visudo`. Ниже показан пример для службы `trusttunnel-client.service`; замените имя unit и пути бинарных файлов на фактические:
+Создайте `/etc/sudoers.d/trusttunnelmanager` через `visudo`. Ниже показаны правила для существующей службы `trusttunnel.service` и проверки через `tun0`. При других значениях `Watchdog__Interface`, URL проверки или таймаутов измените строку `TTM_PROBE`, чтобы она точно соответствовала аргументам команды в конфигурации:
 
 ```sudoers
-Cmnd_Alias TTM_SYSTEMD = /usr/bin/systemctl show trusttunnel-client.service --no-pager *, /usr/bin/systemctl start trusttunnel-client.service, /usr/bin/systemctl stop trusttunnel-client.service, /usr/bin/systemctl restart trusttunnel-client.service
-Cmnd_Alias TTM_JOURNAL = /usr/bin/journalctl -u trusttunnel-client.service -n * --no-pager -o short-iso-precise
-trusttunnelmanager ALL=(root) NOPASSWD: TTM_SYSTEMD, TTM_JOURNAL
+Cmnd_Alias TTM_SYSTEMD = /usr/bin/systemctl show trusttunnel.service --no-pager *, /usr/bin/systemctl start trusttunnel.service, /usr/bin/systemctl stop trusttunnel.service, /usr/bin/systemctl restart trusttunnel.service
+Cmnd_Alias TTM_JOURNAL = /usr/bin/journalctl -u trusttunnel.service -n * --no-pager -o short-iso-precise
+Cmnd_Alias TTM_PROBE = /usr/bin/curl --interface tun0 --connect-timeout 5 --max-time 12 --silent --show-error --fail --output /dev/null --url https://www.cloudflare.com/cdn-cgi/trace
+trusttunnelmanager ALL=(root) NOPASSWD: TTM_SYSTEMD, TTM_JOURNAL, TTM_PROBE
 ```
 
-Wildcard в команде `systemctl show` разрешает только чтение свойств указанного unit; он нужен, чтобы sudoers корректно обработал список свойств, разделённых запятыми. Запуск/остановка/перезапуск и просмотр journald ограничены указанным unit. Проверьте фактические пути systemctl/journalctl и затем выполните `sudo visudo -cf /etc/sudoers.d/trusttunnelmanager`. Не выдавайте Manager произвольный sudo.
+Wildcard в команде `systemctl show` разрешает только чтение свойств указанного unit; он нужен, чтобы sudoers корректно обработал список свойств, разделённых запятыми. Запуск/остановка/перезапуск и просмотр journald ограничены указанным unit. Команда `TTM_PROBE` разрешает только заданный HTTPS-запрос через `tun0`; watchdog вызывает sudo в non-interactive режиме. Проверьте фактические пути systemctl/journalctl/curl и затем выполните `sudo visudo -cf /etc/sudoers.d/trusttunnelmanager`.
+
+Проверьте разрешение команды от имени Manager до запуска службы:
+
+```bash
+sudo -u trusttunnelmanager sudo -n -- /usr/bin/curl --interface tun0 --connect-timeout 5 --max-time 12 --silent --show-error --fail --output /dev/null --url https://www.cloudflare.com/cdn-cgi/trace
+echo $?
+```
+
+Ожидаемый код возврата — `0`. Не выдавайте Manager произвольный sudo.
 
 ## Установка Manager
 
@@ -126,6 +147,33 @@ sudo systemctl status trusttunnelmanager
 
 Откройте TCP 5080 только между доверенными серверами и административными сетями. Не завершайте TLS перед peer API: приложение проверяет клиентский сертификат непосредственно в TLS connection. Используйте прямой HTTPS или TCP passthrough. Не публикуйте порт peer API в общедоступный Интернет.
 
+## Встроенный VPN watchdog
+
+Manager автоматически проверяет доступность HTTPS через указанный интерфейс (по умолчанию `tun0`). Поведение соответствует прежнему скрипту watchdog:
+
+- первая проверка через 2 минуты после запуска Manager;
+- следующие проверки каждую минуту;
+- после трёх последовательных неудач Manager перезапускает заданный `TrustTunnelClient:ServiceUnit`;
+- автоматические перезапуски ограничены интервалом не чаще одного раза в 5 минут;
+- успешная проверка сбрасывает счётчик ошибок.
+
+Состояние проверки, ошибки и время последнего автоматического перезапуска отображаются в таблице узлов. Для просмотра удалённого watchdog оба узла должны работать на версии Manager с поддержкой watchdog.
+
+**Не удаляйте старый watchdog до успешной проверки нового.** После запуска Manager дождитесь в интерфейсе статуса «VPN доступен». Затем удалите старую systemd-службу и таймер:
+
+```bash
+sudo systemctl disable --now trusttunnel-watchdog.timer
+sudo systemctl stop trusttunnel-watchdog.service 2>/dev/null || true
+sudo rm -f /etc/systemd/system/trusttunnel-watchdog.service
+sudo rm -f /etc/systemd/system/trusttunnel-watchdog.timer
+sudo rm -f /usr/local/sbin/trusttunnel-watchdog.sh
+sudo rm -rf /run/trusttunnel-watchdog
+sudo systemctl daemon-reload
+sudo systemctl reset-failed trusttunnel-watchdog.service
+```
+
+Это не останавливает и не изменяет `trusttunnel.service`.
+
 ## Сопряжение
 
 1. Откройте Manager на целевом узле B и войдите под администратором.
@@ -140,8 +188,8 @@ sudo systemctl status trusttunnelmanager
 
 ```bash
 sudo journalctl -u trusttunnelmanager -f
-sudo journalctl -u trusttunnel-client.service -n 100 --no-pager
-sudo -u trusttunnelmanager sudo -n /usr/bin/systemctl show trusttunnel-client.service --no-pager
+sudo journalctl -u trusttunnel.service -n 100 --no-pager
+sudo -u trusttunnelmanager sudo -n /usr/bin/systemctl show trusttunnel.service --no-pager
 sudo visudo -cf /etc/sudoers.d/trusttunnelmanager
 ```
 

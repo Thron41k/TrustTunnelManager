@@ -48,6 +48,7 @@
                         <tr>
                             <th>Узел</th>
                             <th>Служба</th>
+                            <th>VPN watchdog</th>
                             <th>PID</th>
                             <th>Память</th>
                             <th>CPU time</th>
@@ -80,6 +81,35 @@
                                 @if (!string.IsNullOrWhiteSpace(node.Error))
                                 {
                                     <small>@node.Error</small>
+                                }
+                            </td>
+                            <td>
+                                @if (node.Watchdog is { } watchdog)
+                                {
+                                    <span class="status-indicator @WatchdogIndicatorClass(watchdog.State)"></span>
+                                    @WatchdogStateLabel(watchdog.State)
+                                    <div class="ip-cell">Ошибки: @watchdog.ConsecutiveFailures / @watchdog.FailureThreshold</div>
+                                    <div class="ip-cell">Интерфейс: @watchdog.InterfaceName</div>
+                                    @if (watchdog.LastCheckAtUtc is { } checkedAt)
+                                    {
+                                        <div class="ip-cell">Проверка: @checkedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</div>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(watchdog.LastCheckMessage))
+                                    {
+                                        <small>@watchdog.LastCheckMessage</small>
+                                    }
+                                    @if (watchdog.LastRestartAtUtc is { } restartedAt)
+                                    {
+                                        <div class="ip-cell">Перезапуск: @restartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</div>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(watchdog.LastRestartMessage))
+                                    {
+                                        <small>@watchdog.LastRestartMessage</small>
+                                    }
+                                }
+                                else
+                                {
+                                    <span class="ip-cell">Нет данных (обновите Manager на узле)</span>
                                 }
                             </td>
                             <td>@(node.Service?.MainProcessId?.ToString() ?? "—")</td>
@@ -403,6 +433,28 @@
 
     private static string FormatDuration(long? nanoseconds) =>
         nanoseconds is null ? "—" : TimeSpan.FromTicks(Math.Max(0, nanoseconds.Value / 100)).ToString("c");
+
+    private static string WatchdogStateLabel(WatchdogState state) => state switch
+    {
+        WatchdogState.Disabled => "Отключён",
+        WatchdogState.Waiting => "Ожидание проверки",
+        WatchdogState.Healthy => "VPN доступен",
+        WatchdogState.Degraded => "Проверка не пройдена",
+        WatchdogState.RestartCooldown => "Ожидание повторного перезапуска",
+        WatchdogState.Restarting => "Перезапуск клиента",
+        WatchdogState.Restarted => "Клиент перезапущен",
+        WatchdogState.RestartFailed => "Ошибка перезапуска",
+        WatchdogState.Unsupported => "Не поддерживается",
+        WatchdogState.ConfigurationError => "Ошибка настройки watchdog",
+        _ => "Неизвестно"
+    };
+
+    private static string WatchdogIndicatorClass(WatchdogState state) => state switch
+    {
+        WatchdogState.Healthy => "is-online",
+        WatchdogState.Disabled or WatchdogState.Waiting or WatchdogState.Unsupported => "is-idle",
+        _ => "is-offline"
+    };
 
     public void Dispose()
     {

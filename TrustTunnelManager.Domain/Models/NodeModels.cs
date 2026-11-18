@@ -29,7 +29,38 @@ public sealed record NodeSnapshot(
     DateTimeOffset CollectedAtUtc,
     ClientServiceSnapshot? Service,
     string? Error = null,
-    DateTimeOffset? LastSeenAtUtc = null);
+    DateTimeOffset? LastSeenAtUtc = null,
+    WatchdogSnapshot? Watchdog = null);
+
+public enum WatchdogState
+{
+    Disabled,
+    Waiting,
+    Healthy,
+    Degraded,
+    RestartCooldown,
+    Restarting,
+    Restarted,
+    RestartFailed,
+    Unsupported,
+    ConfigurationError
+}
+
+public sealed record WatchdogSnapshot(
+    bool Enabled,
+    WatchdogState State,
+    string InterfaceName,
+    int ConsecutiveFailures,
+    int FailureThreshold,
+    DateTimeOffset? LastCheckAtUtc,
+    bool? LastCheckSucceeded,
+    string? LastCheckMessage,
+    DateTimeOffset? LastRestartAtUtc,
+    string? LastRestartMessage);
+
+public sealed record NodeStatusResponse(
+    ClientServiceSnapshot Service,
+    WatchdogSnapshot? Watchdog);
 
 public sealed record ClientConfigurationSnapshot(
     string Content,
