@@ -18,8 +18,6 @@ public sealed class TrustTunnelWatchdogService : BackgroundService, ITrustTunnel
     private readonly ProcessCommandRunner _runner;
     private readonly ILogger<TrustTunnelWatchdogService> _logger;
     private readonly WatchdogOptions _options;
-    private readonly bool _useSudo;
-    private readonly string _sudoPath;
     private readonly object _stateLock = new();
 
     private int _consecutiveFailures;
@@ -56,9 +54,9 @@ public sealed class TrustTunnelWatchdogService : BackgroundService, ITrustTunnel
         if (enabled && !Path.IsPathRooted(curlPath))
             throw new InvalidOperationException("Watchdog:CurlPath должен быть абсолютным путём.");
 
-        _useSudo = configuration.GetValue("Watchdog:UseSudo", true);
-        _sudoPath = configuration["Watchdog:SudoPath"] ?? "/usr/bin/sudo";
-        if (enabled && _useSudo && !Path.IsPathRooted(_sudoPath))
+        var useSudo = configuration.GetValue("Watchdog:UseSudo", true);
+        var sudoPath = configuration["Watchdog:SudoPath"] ?? "/usr/bin/sudo";
+        if (enabled && useSudo && !Path.IsPathRooted(sudoPath))
             throw new InvalidOperationException("Watchdog:SudoPath должен быть абсолютным путём.");
 
         _options = new WatchdogOptions(
@@ -66,8 +64,8 @@ public sealed class TrustTunnelWatchdogService : BackgroundService, ITrustTunnel
             interfaceName,
             probeUrl,
             curlPath,
-            _sudoPath,
-            _useSudo,
+            sudoPath,
+            useSudo,
             ReadBounded(configuration, "Watchdog:InitialDelaySeconds", 120, 0, 3600),
             ReadBounded(configuration, "Watchdog:IntervalSeconds", 60, 10, 3600),
             ReadBounded(configuration, "Watchdog:FailureThreshold", 3, 1, 20),
@@ -105,6 +103,16 @@ public sealed class TrustTunnelWatchdogService : BackgroundService, ITrustTunnel
         {
             Publish(WatchdogState.Unsupported, null, null, "Watchdog поддерживается только в Linux.");
             _logger.LogWarning("TrustTunnel VPN watchdog is supported only on Linux.");
+            return;
+        }
+
+        if (!File.Exists(_options.CurlPath) ||
+            (_options.UseSudo && !File.Exists(_options.SudoPath)))
+        {
+            var missingPath = !File.Exists(_options.CurlPath) ? _options.CurlPath : _options.SudoPath;
+            Publish(WatchdogState.ConfigurationError, null, null,
+                $"Не найден исполняемый файл watchdog: {missingPath}");
+            _logger.LogError("VPN watchdog executable was not found: {Path}", missingPath);
             return;
         }
 
@@ -169,12 +177,21 @@ public sealed class TrustTunnelWatchdogService : BackgroundService, ITrustTunnel
             return;
         }
 
-        _consecutiveFailures = Math.Min(_consecutiveFailures + 1, int.MaxValue);
         var failureMessage = FirstNonEmpty(
             result.StandardError,
             result.StandardOutput,
             $"curl завершился с кодом {result.ExitCode}.");
         failureMessage = Truncate(failureMessage);
+
+        if (IsProbeConfigurationError(failureMessage))
+        {
+            Publish(WatchdogState.ConfigurationError, checkedAt, false, failureMessage);
+            _logger.LogError("VPN watchdog probe is not configured correctly: {Failure}", failureMessage);
+            return;
+        }
+
+        if (_consecutiveFailures < int.MaxValue)
+            _consecutiveFailures++;
 
         _logger.LogWarning(
             "VPN health check failed ({Failures}/{Threshold}) through {Interface}: {Failure}",
@@ -252,7 +269,7 @@ public sealed class TrustTunnelWatchdogService : BackgroundService, ITrustTunnel
 
         var executable = _options.UseSudo ? _options.SudoPath : _options.CurlPath;
         var commandArguments = _options.UseSudo
-            ? new[] { "--", _options.CurlPath }.Concat(arguments)
+            ? new[] { "-n", "--", _options.CurlPath }.Concat(arguments)
             : arguments;
 
         return await _runner.RunAsync(
@@ -287,6 +304,12 @@ public sealed class TrustTunnelWatchdogService : BackgroundService, ITrustTunnel
     private static int ReadBounded(
         IConfiguration configuration, string key, int defaultValue, int minimum, int maximum) =>
         Math.Clamp(configuration.GetValue(key, defaultValue), minimum, maximum);
+
+    private static bool IsProbeConfigurationError(string message) =>
+        message.Contains("a password is required", StringComparison.OrdinalIgnoreCase) ||
+        message.Contains("not allowed to execute", StringComparison.OrdinalIgnoreCase) ||
+        message.Contains("command not allowed", StringComparison.OrdinalIgnoreCase) ||
+        message.Contains("No such file or directory", StringComparison.OrdinalIgnoreCase);
 
     private static string FirstNonEmpty(params string?[] values) =>
         values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? "Неизвестная ошибка.";
