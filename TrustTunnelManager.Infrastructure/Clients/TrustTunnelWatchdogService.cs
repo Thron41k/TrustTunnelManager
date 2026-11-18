@@ -18,6 +18,8 @@ public sealed class TrustTunnelWatchdogService : BackgroundService, ITrustTunnel
     private readonly ProcessCommandRunner _runner;
     private readonly ILogger<TrustTunnelWatchdogService> _logger;
     private readonly WatchdogOptions _options;
+    private readonly bool _useSudo;
+    private readonly string _sudoPath;
     private readonly object _stateLock = new();
 
     private int _consecutiveFailures;
@@ -54,11 +56,18 @@ public sealed class TrustTunnelWatchdogService : BackgroundService, ITrustTunnel
         if (enabled && !Path.IsPathRooted(curlPath))
             throw new InvalidOperationException("Watchdog:CurlPath должен быть абсолютным путём.");
 
+        _useSudo = configuration.GetValue("Watchdog:UseSudo", true);
+        _sudoPath = configuration["Watchdog:SudoPath"] ?? "/usr/bin/sudo";
+        if (enabled && _useSudo && !Path.IsPathRooted(_sudoPath))
+            throw new InvalidOperationException("Watchdog:SudoPath должен быть абсолютным путём.");
+
         _options = new WatchdogOptions(
             enabled,
             interfaceName,
             probeUrl,
             curlPath,
+            _sudoPath,
+            _useSudo,
             ReadBounded(configuration, "Watchdog:InitialDelaySeconds", 120, 0, 3600),
             ReadBounded(configuration, "Watchdog:IntervalSeconds", 60, 10, 3600),
             ReadBounded(configuration, "Watchdog:FailureThreshold", 3, 1, 20),
@@ -241,9 +250,14 @@ public sealed class TrustTunnelWatchdogService : BackgroundService, ITrustTunnel
             "--url", _options.ProbeUrl
         };
 
+        var executable = _options.UseSudo ? _options.SudoPath : _options.CurlPath;
+        var commandArguments = _options.UseSudo
+            ? new[] { "--", _options.CurlPath }.Concat(arguments)
+            : arguments;
+
         return await _runner.RunAsync(
-            _options.CurlPath,
-            arguments,
+            executable,
+            commandArguments,
             TimeSpan.FromSeconds(_options.MaxTimeSeconds + 5),
             cancellationToken);
     }
@@ -285,6 +299,8 @@ public sealed class TrustTunnelWatchdogService : BackgroundService, ITrustTunnel
         string InterfaceName,
         string ProbeUrl,
         string CurlPath,
+        string SudoPath,
+        bool UseSudo,
         int InitialDelaySeconds,
         int IntervalSeconds,
         int FailureThreshold,
