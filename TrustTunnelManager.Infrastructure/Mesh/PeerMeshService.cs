@@ -33,6 +33,7 @@ public sealed class PeerMeshService : IPeerMeshService
     private readonly IPairingInvitationStore _invitations;
     private readonly ILocalTrustTunnelClientManager _local;
     private readonly IAuditLog _audit;
+    private readonly ITrustTunnelWatchdogStatus _watchdog;
     private readonly ConcurrentDictionary<string, LastKnownPeerStatus> _lastKnown = new(StringComparer.OrdinalIgnoreCase);
 
     public PeerMeshService(
@@ -40,10 +41,11 @@ public sealed class PeerMeshService : IPeerMeshService
         IPeerRegistry peers,
         IPairingInvitationStore invitations,
         ILocalTrustTunnelClientManager local,
-        IAuditLog audit)
+        IAuditLog audit,
+        ITrustTunnelWatchdogStatus watchdog)
     {
-        (_identity, _peers, _invitations, _local, _audit) =
-            (identity, peers, invitations, local, audit);
+        (_identity, _peers, _invitations, _local, _audit, _watchdog) =
+            (identity, peers, invitations, local, audit, watchdog);
     }
 
     public async Task<IReadOnlyList<NodeSnapshot>> GetClusterSnapshotAsync(CancellationToken ct = default)
@@ -52,7 +54,7 @@ public sealed class PeerMeshService : IPeerMeshService
         var local = await _local.GetStatusAsync(ct);
         var snapshots = new List<NodeSnapshot>
         {
-            new(_identity.Info, true, true, false, now, local, local.Error, now)
+            new(_identity.Info, true, true, false, now, local, local.Error, now, _watchdog.GetSnapshot())
         };
 
         var peers = await _peers.GetAllAsync(ct);
@@ -65,11 +67,13 @@ public sealed class PeerMeshService : IPeerMeshService
     {
         try
         {
-            var status = await SendAsync<ClientServiceSnapshot>(
+            var payload = await SendAsync<JsonElement>(
                 peer, HttpMethod.Get, "/internal/v1/status", null, ct);
+            var status = ParseStatusResponse(payload);
             var lastSeen = DateTimeOffset.UtcNow;
             _lastKnown[peer.Node.NodeId] = new(status, lastSeen);
-            return new(peer.Node, false, true, false, lastSeen, status, status.Error, lastSeen);
+            return new(peer.Node, false, true, false, lastSeen,
+                status.Service, status.Service.Error, lastSeen, status.Watchdog);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -85,9 +89,10 @@ public sealed class PeerMeshService : IPeerMeshService
                 false,
                 true,
                 DateTimeOffset.UtcNow,
-                lastKnown?.Service,
+                lastKnown?.Status.Service,
                 "Недоступен: " + exception.Message,
-                lastKnown?.LastSeenAtUtc);
+                lastKnown?.LastSeenAtUtc,
+                lastKnown?.Status.Watchdog);
         }
     }
 
@@ -306,5 +311,22 @@ public sealed class PeerMeshService : IPeerMeshService
     private static bool IsPeerFailure(Exception exception) =>
         exception is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException;
 
-    private sealed record LastKnownPeerStatus(ClientServiceSnapshot Service, DateTimeOffset LastSeenAtUtc);
+    private static NodeStatusResponse ParseStatusResponse(JsonElement payload)
+    {
+        if (payload.ValueKind != JsonValueKind.Object)
+            throw new JsonException("Peer вернул некорректное состояние узла.");
+
+        // Backward compatibility: older Manager versions returned ClientServiceSnapshot directly.
+        if (!payload.TryGetProperty("service", out _))
+        {
+            var legacyStatus = payload.Deserialize<ClientServiceSnapshot>(JsonOptions)
+                ?? throw new JsonException("Peer вернул пустое состояние службы.");
+            return new NodeStatusResponse(legacyStatus, null);
+        }
+
+        return payload.Deserialize<NodeStatusResponse>(JsonOptions)
+            ?? throw new JsonException("Peer вернул пустое состояние узла.");
+    }
+
+    private sealed record LastKnownPeerStatus(NodeStatusResponse Status, DateTimeOffset LastSeenAtUtc);
 }
