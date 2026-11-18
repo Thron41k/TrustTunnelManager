@@ -50,3 +50,9 @@ public interface IPeerMeshService
         CancellationToken cancellationToken = default);
     Task<bool> RemovePeerAsync(string nodeId, string actor, CancellationToken cancellationToken = default);
 }
+
+
+public interface ITrustTunnelWatchdogStatus
+{
+    WatchdogSnapshot GetSnapshot();
+}
