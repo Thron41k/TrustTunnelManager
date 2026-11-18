@@ -167,7 +167,7 @@ public sealed class ConfigurationChangeCoordinator(
                 await stream.FlushAsync(cancellationToken);
             }
 
-            if (previousMode.HasValue)
+            if (OperatingSystem.IsLinux() && previousMode.HasValue)
             {
                 File.SetUnixFileMode(temporaryPath, previousMode.Value);
             }
