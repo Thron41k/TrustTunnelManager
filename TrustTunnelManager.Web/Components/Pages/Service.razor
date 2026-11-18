@@ -1,0 +1,282 @@
+@page "/service"
+@implements IAsyncDisposable
+@inject ITrustTunnelServiceControl ServiceControl
+@inject IAuditLog AuditLog
+@inject IJSRuntime JS
+@inject ILogger<Service> Logger
+@inject AuthenticationStateProvider Authentication
+
+<PageTitle>Служба и журналы — TrustTunnel Manager</PageTitle>
+
+<div class="page-heading">
+    <div>
+        <div class="eyebrow">SYSTEMD / JOURNALD</div>
+        <h1>Служба и журналы</h1>
+        <p>Управление локальной службой TrustTunnel endpoint и просмотр её журнала.</p>
+    </div>
+    <button class="button-secondary" @onclick="RefreshAsync" disabled="@_isLoading">Обновить</button>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(_error))
+{
+    <div class="notice notice-error">@_error</div>
+}
+@if (!string.IsNullOrWhiteSpace(_message))
+{
+    <div class="notice notice-success">@_message</div>
+}
+
+<section class="panel">
+    <div class="panel-heading">
+        <div>
+            <h2>Состояние службы</h2>
+            <p>systemd unit, заданный в конфигурации TrustTunnelManager.</p>
+        </div>
+        @if (_status is not null)
+        {
+            <span class="state-badge @(_status.IsActive ? "state-online" : "state-offline")">
+                @_status.ActiveState
+            </span>
+        }
+    </div>
+
+    @if (_status is null || _isLoading)
+    {
+        <div class="empty-state">Получение состояния службы...</div>
+    }
+    else
+    {
+        @if (!_status.IsSupported)
+        {
+            <div class="notice notice-warning">@_status.ErrorMessage</div>
+        }
+        else if (!_status.IsInstalled)
+        {
+            <div class="notice notice-error">Служба TrustTunnel не найдена. Проверьте параметр Service:UnitName.</div>
+        }
+
+        <div class="service-stats">
+            <div><span>Состояние</span><strong>@_status.ActiveState / @_status.SubState</strong></div>
+            <div><span>Автозапуск</span><strong>@(_status.IsEnabled ? "Включён" : "Выключен")</strong></div>
+            <div><span>Main PID</span><strong>@(_status.MainProcessId?.ToString() ?? "—")</strong></div>
+        </div>
+
+        <div class="service-actions">
+            <button class="button-primary" @onclick='() => ExecuteActionAsync("start")' disabled="@(!_status.IsSupported || !_status.IsInstalled)">Запустить</button>
+            <button class="button-secondary" @onclick='() => ExecuteActionAsync("stop")' disabled="@(!_status.IsSupported || !_status.IsActive)">Остановить</button>
+            <button class="button-secondary" @onclick='() => ExecuteActionAsync("restart")' disabled="@(!_status.IsSupported || !_status.IsInstalled)">Перезапустить</button>
+            <button class="button-secondary" @onclick='() => ExecuteActionAsync("reload")' disabled="@(!_status.IsSupported || !_status.IsActive)">SIGHUP / Reload</button>
+        </div>
+        <p class="form-hint">Перезапуск прерывает все активные VPN-соединения. Reload отправляет SIGHUP и перечитывает TLS-хосты и настройки подписки; пользователи и правила требуют перезапуска.</p>
+    }
+</section>
+
+<section class="panel logs-panel">
+    <div class="panel-heading">
+        <div>
+            <h2>Журнал TrustTunnel</h2>
+            <p>Последние строки из systemd journal.</p>
+        </div>
+        <div class="panel-actions">
+            <select @bind="_logCount">
+                <option value="100">100 строк</option>
+                <option value="200">200 строк</option>
+                <option value="500">500 строк</option>
+                <option value="1000">1000 строк</option>
+            </select>
+            <button class="button-secondary" @onclick="LoadLogsAsync">Обновить журнал</button>
+        </div>
+    </div>
+
+    @if (_logs.Count == 0)
+    {
+        <div class="empty-state">Журнал пуст или недоступен.</div>
+    }
+    else
+    {
+        <div class="log-viewer">
+            @foreach (var entry in _logs)
+            {
+                <div class="log-line">
+                    <span class="log-time">@entry.Timestamp</span>
+                    <span>@entry.Message</span>
+                </div>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    private string _actor = "unknown";
+    private TrustTunnelServiceStatus? _status;
+    private IReadOnlyList<TrustTunnelLogEntry> _logs = [];
+    private bool _isLoading;
+    private string _logCount = "200";
+    private string? _message;
+    private string? _error;
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _timerCancellation;
+    private Task _timerTask = Task.CompletedTask;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await Authentication.GetAuthenticationStateAsync();
+        _actor = state.User.Identity?.Name ?? "unknown";
+        await RefreshAsync();
+
+        _timerCancellation = new CancellationTokenSource();
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
+        _timerTask = RunRefreshLoopAsync(_timerCancellation.Token);
+    }
+
+    private async Task RefreshAsync()
+    {
+        _isLoading = true;
+        _error = null;
+
+        try
+        {
+            _status = await ServiceControl.GetStatusAsync();
+            await LoadLogsAsync();
+        }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Failed to read TrustTunnel service status.");
+            _error = exception.Message;
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task LoadLogsAsync()
+    {
+        try
+        {
+            _logs = await ServiceControl.GetRecentLogsAsync(
+                int.TryParse(_logCount, out var count) ? count : 200);
+        }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Failed to read TrustTunnel journal.");
+            _error = exception.Message;
+        }
+    }
+
+    private async Task ExecuteActionAsync(string action)
+    {
+        if (action is "stop" or "restart")
+        {
+            var confirmed = await JS.InvokeAsync<bool>(
+                "confirm",
+                action == "stop"
+                    ? "Остановить TrustTunnel? Все подключения будут разорваны."
+                    : "Перезапустить TrustTunnel? Все подключения будут разорваны.");
+
+            if (!confirmed)
+            {
+                return;
+            }
+        }
+
+        _error = null;
+        _message = null;
+
+        try
+        {
+            var result = action switch
+            {
+                "start" => await ServiceControl.StartAsync(),
+                "stop" => await ServiceControl.StopAsync(),
+                "restart" => await ServiceControl.RestartAsync(),
+                "reload" => await ServiceControl.ReloadAsync(),
+                _ => throw new ArgumentOutOfRangeException(nameof(action))
+            };
+
+            await AuditLog.WriteAsync(
+                _actor,
+                $"service.{action}",
+                "trusttunnel.service",
+                result.Success,
+                result.Message);
+
+            if (result.Success)
+            {
+                _message = result.Message;
+            }
+            else
+            {
+                _error = result.Message;
+            }
+
+            await RefreshAsync();
+        }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "TrustTunnel service action {Action} failed.", action);
+            _error = exception.Message;
+
+            try
+            {
+                await AuditLog.WriteAsync(
+                    _actor,
+                    $"service.{action}",
+                    "trusttunnel.service",
+                    false,
+                    exception.Message);
+            }
+            catch (Exception auditException)
+            {
+                Logger.LogError(auditException, "Failed to record service audit event.");
+            }
+        }
+    }
+
+    private async Task RunRefreshLoopAsync(CancellationToken cancellationToken)
+    {
+        if (_timer is null)
+        {
+            return;
+        }
+
+        try
+        {
+            while (await _timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await InvokeAsync(async () =>
+                {
+                    _status = await ServiceControl.GetStatusAsync();
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Component disposed.
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_timerCancellation is not null)
+        {
+            await _timerCancellation.CancelAsync();
+        }
+
+        if (_timerTask is not null)
+        {
+            try
+            {
+                await _timerTask;
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected.
+            }
+        }
+
+        _timer?.Dispose();
+        _timerCancellation?.Dispose();
+    }
+}

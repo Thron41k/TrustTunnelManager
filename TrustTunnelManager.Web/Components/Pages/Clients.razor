@@ -1,0 +1,527 @@
+@page "/clients"
+@inject ITrustTunnelClientManagementService ClientService
+@inject ITrustTunnelClientConfigurationExporter ConfigurationExporter
+@inject IAuditLog AuditLog
+@inject IJSRuntime JS
+@inject ILogger<Clients> Logger
+@inject AuthenticationStateProvider Authentication
+
+<PageTitle>Пользователи — TrustTunnel Manager</PageTitle>
+
+<div class="page-heading">
+    <div>
+        <div class="eyebrow">УПРАВЛЕНИЕ ДОСТУПОМ</div>
+        <h1>Пользователи</h1>
+        <p>Учётные записи, которые TrustTunnel использует для аутентификации VPN-клиентов.</p>
+    </div>
+    <button class="button-primary" @onclick="OpenCreate">＋ Добавить пользователя</button>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(_message))
+{
+    <div class="notice notice-success">@_message</div>
+}
+@if (!string.IsNullOrWhiteSpace(_error))
+{
+    <div class="notice notice-error">@_error</div>
+}
+
+@if (_isLoading)
+{
+    <div class="panel loading-panel">Загрузка пользователей...</div>
+}
+else
+{
+    <section class="panel">
+        <div class="panel-heading">
+            <div>
+                <h2>Список пользователей</h2>
+                <p>Всего записей: @_clients.Count</p>
+            </div>
+            <button class="button-secondary" @onclick="LoadAsync">Обновить</button>
+        </div>
+
+        @if (_clients.Count == 0)
+        {
+            <div class="empty-state">В credentials.toml пока нет пользователей.</div>
+        }
+        else
+        {
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Пользователь</th>
+                            <th>HTTP/2 соединения</th>
+                            <th>HTTP/3 соединения</th>
+                            <th class="actions-column">Действия</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var client in _clients)
+                        {
+                            <tr @key="client.Username">
+                                <td>
+                                    <div class="primary-cell">@client.Username</div>
+                                    <div class="secondary-cell">Пароль скрыт</div>
+                                </td>
+                                <td>@LimitText(client.MaxHttp2Connections)</td>
+                                <td>@LimitText(client.MaxHttp3Connections)</td>
+                                <td class="row-actions">
+                                    <button class="button-small" @onclick="() => OpenEdit(client)">Изменить</button>
+                                    <button class="button-small" @onclick="() => OpenExport(client)">Конфигурация</button>
+                                    <button class="button-small button-danger" @onclick="() => DeleteAsync(client)">Удалить</button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+}
+
+@if (_showEditor)
+{
+    <div class="modal-backdrop">
+        <section class="modal-card">
+            <div class="modal-heading">
+                <div>
+                    <div class="eyebrow">VPN AUTHENTICATION</div>
+                    <h2>@(_editingUsername is null ? "Новый пользователь" : $"Изменение: {_editingUsername}")</h2>
+                </div>
+                <button class="icon-button" @onclick="CloseEditor" aria-label="Закрыть">×</button>
+            </div>
+
+            <div class="form-grid">
+                @if (_editingUsername is null)
+                {
+                    <label class="form-field full-width">
+                        <span>Имя пользователя</span>
+                        <input @bind="_username" maxlength="64" autocomplete="off" placeholder="например, ivan.petrov">
+                    </label>
+                }
+                <label class="form-field full-width">
+                    <span>@(_editingUsername is null ? "Пароль" : "Новый пароль (оставьте пустым без изменений)")</span>
+                    <div class="input-with-action">
+                        <input @bind="_password" type="text" autocomplete="new-password" placeholder="Не менее 16 символов">
+                        <button type="button" class="button-secondary" @onclick="GeneratePassword">Создать</button>
+                    </div>
+                </label>
+                <label class="form-field">
+                    <span>Максимум HTTP/2 соединений</span>
+                    <input @bind="_http2Limit" inputmode="numeric" placeholder="Без ограничения">
+                </label>
+                <label class="form-field">
+                    <span>Максимум HTTP/3 соединений</span>
+                    <input @bind="_http3Limit" inputmode="numeric" placeholder="Без ограничения">
+                </label>
+            </div>
+
+            <p class="form-hint">Пустой лимит означает значение по умолчанию сервера. Изменение пользователя перезапускает TrustTunnel и прерывает текущие подключения.</p>
+
+            <div class="modal-actions">
+                <button class="button-secondary" @onclick="CloseEditor">Отмена</button>
+                <button class="button-primary" @onclick="SaveClientAsync" disabled="@_isSaving">
+                    @(_isSaving ? "Применение..." : "Сохранить")
+                </button>
+            </div>
+        </section>
+    </div>
+}
+
+@if (_showExport && _exportClient is not null)
+{
+    <div class="modal-backdrop">
+        <section class="modal-card modal-wide">
+            <div class="modal-heading">
+                <div>
+                    <div class="eyebrow">CLIENT CONFIGURATION</div>
+                    <h2>Конфигурация: @_exportClient.Username</h2>
+                </div>
+                <button class="icon-button" @onclick="CloseExport" aria-label="Закрыть">×</button>
+            </div>
+
+            @if (_exportContent is null)
+            {
+                <div class="form-grid">
+                    <label class="form-field">
+                        <span>Формат</span>
+                        <select @bind="_exportFormat">
+                            <option value="deeplink">Deep link (tt://)</option>
+                            <option value="toml">TOML-файл</option>
+                        </select>
+                    </label>
+                    <label class="form-field">
+                        <span>Имя конфигурации</span>
+                        <input @bind="_exportName" placeholder="TrustTunnel">
+                    </label>
+                    <label class="form-field full-width">
+                        <span>Адреса endpoint (по одному на строку)</span>
+                        <textarea @bind="_exportAddresses" rows="3" placeholder="vpn.example.com:443"></textarea>
+                    </label>
+                    <label class="form-field">
+                        <span>Custom SNI (необязательно)</span>
+                        <input @bind="_exportCustomSni" placeholder="example.org">
+                    </label>
+                    <label class="form-field">
+                        <span>DNS upstream (по одному на строку)</span>
+                        <textarea @bind="_exportDns" rows="2" placeholder="tls://1.1.1.1"></textarea>
+                    </label>
+                    <label class="form-field full-width">
+                        <span>Client Random Prefix (необязательно)</span>
+                        <input @bind="_exportPrefix" placeholder="aabbcc или a0b0/f0f0">
+                    </label>
+                    <label class="form-field full-width">
+                        <span>Client Random Auth Key (необязательно)</span>
+                        <input @bind="_exportAuthKey" type="password" autocomplete="off">
+                    </label>
+                    <label class="check-field full-width">
+                        <input type="checkbox" @bind="_subscriptionOnly" />
+                        Только ссылка на подписку (требует включённой подписки TrustTunnel)
+                    </label>
+                </div>
+                <p class="form-hint">Генерация выполняется штатным trusttunnel_endpoint. Для адреса и SNI используются проверки самого TrustTunnel.</p>
+                <div class="modal-actions">
+                    <button class="button-secondary" @onclick="CloseExport">Отмена</button>
+                    <button class="button-primary" @onclick="GenerateConfigurationAsync" disabled="@_isSaving">
+                        @(_isSaving ? "Генерация..." : "Сформировать")
+                    </button>
+                </div>
+            }
+            else
+            {
+                <div class="notice notice-success">Конфигурация сформирована штатным бинарником TrustTunnel.</div>
+                @if (_exportFormat == "deeplink" && !string.IsNullOrWhiteSpace(_qrImageDataUrl))
+                {
+                    <div class="qr-export">
+                        <img src="@_qrImageDataUrl" alt="QR-код конфигурации TrustTunnel" />
+                        <span>Отсканируйте QR-код приложением TrustTunnel.</span>
+                    </div>
+                }
+                <textarea class="export-output" readonly rows="5" @bind="_exportContent"></textarea>
+                <div class="modal-actions">
+                    <button class="button-secondary" @onclick="CloseExport">Закрыть</button>
+                    <button class="button-primary" @onclick="CopyExportAsync">Копировать</button>
+                </div>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <div class="notice notice-error">@_error</div>
+            }
+        </section>
+    </div>
+}
+
+@code {
+    private IReadOnlyList<TrustTunnelClient> _clients = [];
+    private bool _isLoading = true;
+    private bool _isSaving;
+    private bool _showEditor;
+    private bool _showExport;
+    private string? _editingUsername;
+    private TrustTunnelClient? _exportClient;
+    private string _username = string.Empty;
+    private string _password = string.Empty;
+    private string _http2Limit = string.Empty;
+    private string _http3Limit = string.Empty;
+    private string _exportFormat = "deeplink";
+    private string _exportName = string.Empty;
+    private string _exportAddresses = string.Empty;
+    private string _exportCustomSni = string.Empty;
+    private string _exportDns = string.Empty;
+    private string _exportPrefix = string.Empty;
+    private string _exportAuthKey = string.Empty;
+    private bool _subscriptionOnly;
+    private string? _exportContent;
+    private string? _qrImageDataUrl;
+    private string? _message;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await Authentication.GetAuthenticationStateAsync();
+        _actor = state.User.Identity?.Name ?? "unknown";
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _isLoading = true;
+        _error = null;
+
+        try
+        {
+            _clients = await ClientService.GetClientsAsync();
+        }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Failed to load TrustTunnel clients.");
+            _error = exception.Message;
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void OpenCreate()
+    {
+        _editingUsername = null;
+        _username = string.Empty;
+        _password = GenerateSecurePassword();
+        _http2Limit = string.Empty;
+        _http3Limit = string.Empty;
+        _error = null;
+        _showEditor = true;
+    }
+
+    private void OpenEdit(TrustTunnelClient client)
+    {
+        _editingUsername = client.Username;
+        _username = client.Username;
+        _password = string.Empty;
+        _http2Limit = client.MaxHttp2Connections?.ToString() ?? string.Empty;
+        _http3Limit = client.MaxHttp3Connections?.ToString() ?? string.Empty;
+        _error = null;
+        _showEditor = true;
+    }
+
+    private void CloseEditor()
+    {
+        _showEditor = false;
+        _isSaving = false;
+    }
+
+    private void GeneratePassword() =>
+        _password = GenerateSecurePassword();
+
+    private async Task SaveClientAsync()
+    {
+        _error = null;
+
+        if (!TryParseLimit(_http2Limit, out var http2) ||
+            !TryParseLimit(_http3Limit, out var http3))
+        {
+            _error = "Лимит должен быть целым числом от 0 до 1 000 000 либо оставлен пустым.";
+            return;
+        }
+
+        if (_editingUsername is null && string.IsNullOrWhiteSpace(_password))
+        {
+            _error = "Укажите пароль или сгенерируйте новый.";
+            return;
+        }
+
+        _isSaving = true;
+
+        try
+        {
+            if (_editingUsername is null)
+            {
+                await ClientService.CreateClientAsync(new CreateTrustTunnelClientCommand(
+                    _username.Trim(), _password, http2, http3));
+
+                await AuditLog.WriteAsync(
+                    UserName,
+                    "client.create",
+                    _username.Trim(),
+                    true,
+                    "Создан VPN-пользователь.");
+                _message = $"Пользователь '{_username}' создан.";
+            }
+            else
+            {
+                await ClientService.UpdateClientAsync(
+                    _editingUsername,
+                    new UpdateTrustTunnelClientCommand(
+                        string.IsNullOrWhiteSpace(_password) ? null : _password,
+                        http2,
+                        http3));
+
+                await AuditLog.WriteAsync(
+                    UserName,
+                    "client.update",
+                    _editingUsername,
+                    true,
+                    "Изменены пароль или лимиты соединений.");
+                _message = $"Пользователь '{_editingUsername}' изменён.";
+            }
+
+            CloseEditor();
+            await LoadAsync();
+        }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Failed to save TrustTunnel client {Username}.", _username);
+            _error = exception.Message;
+            await WriteAuditFailureAsync(
+                _editingUsername is null ? "client.create" : "client.update",
+                _editingUsername ?? _username,
+                exception.Message);
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private async Task DeleteAsync(TrustTunnelClient client)
+    {
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            $"Удалить пользователя '{client.Username}'? Изменения потребуют перезапуска TrustTunnel.");
+
+        if (!confirmed)
+        {
+            return;
+        }
+
+        _error = null;
+
+        try
+        {
+            await ClientService.DeleteClientAsync(client.Username);
+            await AuditLog.WriteAsync(UserName, "client.delete", client.Username, true);
+            _message = $"Пользователь '{client.Username}' удалён.";
+            await LoadAsync();
+        }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Failed to delete TrustTunnel client {Username}.", client.Username);
+            _error = exception.Message;
+            await WriteAuditFailureAsync("client.delete", client.Username, exception.Message);
+        }
+    }
+
+    private void OpenExport(TrustTunnelClient client)
+    {
+        _exportClient = client;
+        _exportContent = null;
+        _qrImageDataUrl = null;
+        _exportFormat = "deeplink";
+        _exportName = "TrustTunnel";
+        _exportAddresses = string.Empty;
+        _exportCustomSni = string.Empty;
+        _exportDns = string.Empty;
+        _exportPrefix = string.Empty;
+        _exportAuthKey = string.Empty;
+        _subscriptionOnly = false;
+        _error = null;
+        _showExport = true;
+    }
+
+    private void CloseExport()
+    {
+        _showExport = false;
+        _exportContent = null;
+        _qrImageDataUrl = null;
+        _exportClient = null;
+    }
+
+    private async Task GenerateConfigurationAsync()
+    {
+        if (_exportClient is null)
+        {
+            return;
+        }
+
+        _error = null;
+        _isSaving = true;
+
+        try
+        {
+            var request = new ClientConfigurationRequest(
+                _exportFormat,
+                SplitLines(_exportAddresses),
+                string.IsNullOrWhiteSpace(_exportName) ? null : _exportName,
+                string.IsNullOrWhiteSpace(_exportCustomSni) ? null : _exportCustomSni,
+                string.IsNullOrWhiteSpace(_exportPrefix) ? null : _exportPrefix,
+                string.IsNullOrWhiteSpace(_exportAuthKey) ? null : _exportAuthKey,
+                SplitLines(_exportDns),
+                _subscriptionOnly);
+
+            var exported = await ConfigurationExporter.ExportAsync(
+                _exportClient.Username,
+                request);
+
+            _exportContent = exported.Content;
+            _qrImageDataUrl = exported.Format == "deeplink"
+                ? $"data:image/png;base64,{Convert.ToBase64String(PngByteQRCodeHelper.GetQRCode(exported.Content, QRCodeGenerator.ECCLevel.Q, 7))}"
+                : null;
+
+            await AuditLog.WriteAsync(
+                UserName,
+                "client.export",
+                _exportClient.Username,
+                true,
+                $"Формат: {exported.Format}.");
+        }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Failed to export configuration for {Username}.", _exportClient.Username);
+            _error = exception.Message;
+            await WriteAuditFailureAsync("client.export", _exportClient.Username, exception.Message);
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private async Task CopyExportAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(_exportContent))
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", _exportContent);
+            _message = "Конфигурация скопирована.";
+            CloseExport();
+        }
+    }
+
+    private async Task WriteAuditFailureAsync(string action, string target, string details)
+    {
+        try
+        {
+            await AuditLog.WriteAsync(UserName, action, target, false, details);
+        }
+        catch (Exception auditException)
+        {
+            Logger.LogError(auditException, "Failed to record an audit event.");
+        }
+    }
+
+    private string _actor = "unknown";
+    private string UserName => _actor;
+
+    private static string GenerateSecurePassword() =>
+        Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24))
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+
+    private static bool TryParseLimit(string value, out uint? parsed)
+    {
+        parsed = null;
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        if (!uint.TryParse(value, out var result) || result > 1_000_000)
+        {
+            return false;
+        }
+
+        parsed = result;
+        return true;
+    }
+
+    private static string LimitText(uint? value) =>
+        value?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "Без ограничения";
+
+    private static string[] SplitLines(string value) =>
+        value.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+}

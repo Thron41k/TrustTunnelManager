@@ -1,0 +1,81 @@
+@page "/audit"
+@inject IAuditLog AuditLog
+@inject ILogger<Audit> Logger
+
+<PageTitle>Аудит — TrustTunnel Manager</PageTitle>
+
+<div class="page-heading">
+    <div>
+        <div class="eyebrow">SECURITY / AUDIT</div>
+        <h1>Аудит действий</h1>
+        <p>Кто, когда и какие операции выполнял в TrustTunnelManager.</p>
+    </div>
+    <button class="button-secondary" @onclick="LoadAsync">Обновить</button>
+</div>
+
+<section class="panel">
+    @if (_error is not null)
+    {
+        <div class="notice notice-error">@_error</div>
+    }
+    else if (_events.Count == 0)
+    {
+        <div class="empty-state">Записей аудита пока нет.</div>
+    }
+    else
+    {
+        <div class="table-scroll">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Дата и время (UTC)</th>
+                        <th>Администратор</th>
+                        <th>Операция</th>
+                        <th>Объект</th>
+                        <th>Результат</th>
+                        <th>Подробности</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var entry in _events)
+                    {
+                        <tr @key="entry.Id">
+                            <td class="secondary-cell">@entry.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                            <td>@entry.Actor</td>
+                            <td><code>@entry.Action</code></td>
+                            <td>@entry.Target</td>
+                            <td>
+                                <span class="state-badge @(entry.Succeeded ? "state-online" : "state-offline")">
+                                    @(entry.Succeeded ? "Успешно" : "Ошибка")
+                                </span>
+                            </td>
+                            <td class="audit-details">@entry.Details</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+@code {
+    private IReadOnlyList<AuditEvent> _events = [];
+    private string? _error;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _error = null;
+
+        try
+        {
+            _events = await AuditLog.GetRecentAsync(500);
+        }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Failed to load audit events.");
+            _error = exception.Message;
+        }
+    }
+}

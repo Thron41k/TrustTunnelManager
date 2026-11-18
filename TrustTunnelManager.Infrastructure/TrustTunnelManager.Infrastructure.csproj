@@ -5,6 +5,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Tomlyn" Version="2.11.1" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.15" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.15" />
     <ProjectReference Include="..\TrustTunnelManager.Application\TrustTunnelManager.Application.csproj" />
     <ProjectReference Include="..\TrustTunnelManager.Domain\TrustTunnelManager.Domain.csproj" />
   </ItemGroup>
