@@ -1,0 +1,43 @@
+{
+  "title": "TrustTunnel Manager",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to TrustTunnel Manager",
+        "description": "Add one Manager node. Repeat the setup for the second server.",
+        "data": {
+          "base_url": "HTTPS address",
+          "api_token": "Read-only monitoring token",
+          "management_token": "Restart control token (optional)",
+          "tls_fingerprint": "Server certificate SHA-256 fingerprint"
+        }
+      }
+    },
+    "error": {
+      "invalid_url": "Enter an HTTPS address without a path.",
+      "invalid_fingerprint": "The certificate fingerprint must contain 64 hexadecimal characters.",
+      "invalid_token": "The monitoring token must contain at least 32 characters.",
+      "invalid_management_token": "The restart control token must contain at least 32 characters.",
+      "invalid_auth": "The monitoring token was rejected.",
+      "cannot_connect": "Cannot connect or verify the Manager certificate. Check the address and fingerprint, and make sure the monitoring API is enabled.",
+      "unknown": "Unexpected error while validating the Manager."
+    },
+    "abort": {
+      "already_configured": "This TrustTunnel Manager node is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Restart control",
+        "description": "Set the separate Management__ApiToken for this Manager. Leave empty to disable the restart button.",
+        "data": {
+          "management_token": "Restart control token"
+        }
+      }
+    },
+    "error": {
+      "invalid_management_token": "The restart control token must contain at least 32 characters."
+    }
+  }
+}

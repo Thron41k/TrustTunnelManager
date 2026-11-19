@@ -1,0 +1,43 @@
+{
+  "title": "TrustTunnel Manager",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Подключение к TrustTunnel Manager",
+        "description": "Добавьте один узел Manager. Повторите настройку для второго сервера.",
+        "data": {
+          "base_url": "HTTPS-адрес",
+          "api_token": "Токен мониторинга только для чтения",
+          "management_token": "Токен управления перезапуском (необязательно)",
+          "tls_fingerprint": "SHA-256 fingerprint TLS-сертификата"
+        }
+      }
+    },
+    "error": {
+      "invalid_url": "Укажите HTTPS-адрес без пути.",
+      "invalid_fingerprint": "Fingerprint должен содержать 64 шестнадцатеричных символа.",
+      "invalid_token": "Токен мониторинга должен содержать не менее 32 символов.",
+      "invalid_management_token": "Токен управления должен содержать не менее 32 символов.",
+      "invalid_auth": "Manager отклонил токен мониторинга.",
+      "cannot_connect": "Не удалось подключиться или проверить сертификат Manager. Проверьте адрес, fingerprint и включение API мониторинга.",
+      "unknown": "Непредвиденная ошибка проверки Manager."
+    },
+    "abort": {
+      "already_configured": "Этот узел TrustTunnel Manager уже добавлен."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Управление перезапуском",
+        "description": "Укажите отдельный Management__ApiToken этого Manager. Оставьте поле пустым, чтобы отключить кнопку перезапуска.",
+        "data": {
+          "management_token": "Токен управления перезапуском"
+        }
+      }
+    },
+    "error": {
+      "invalid_management_token": "Токен управления должен содержать не менее 32 символов."
+    }
+  }
+}

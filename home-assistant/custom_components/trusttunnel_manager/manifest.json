@@ -1,0 +1,13 @@
+{
+  "domain": "trusttunnel_manager",
+  "name": "TrustTunnel Manager",
+  "codeowners": [
+    "@Thron41k"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/Thron41k/TrustTunnelManager",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "requirements": [],
+  "version": "1.2.2"
+}
