@@ -339,7 +339,7 @@ app.MapGet("/api/v1/monitoring/status", async Task<IResult> (
         return Results.NotFound();
 
     const string bearerPrefix = "Bearer ";
-    var authorization = context.Request.Headers.Authorization.ToString();
+    var authorization = context.Request.Headers["Authorization"].ToString();
     if (!context.Request.IsHttps ||
         !authorization.StartsWith(bearerPrefix, StringComparison.OrdinalIgnoreCase))
     {
@@ -355,13 +355,13 @@ app.MapGet("/api/v1/monitoring/status", async Task<IResult> (
         return Results.Unauthorized();
     }
 
-    context.Response.Headers.CacheControl = "no-store";
-    context.Response.Headers.Pragma = "no-cache";
+    context.Response.Headers["Cache-Control"] = "no-store";
+    context.Response.Headers["Pragma"] = "no-cache";
 
     return Results.Ok(new LocalNodeMonitoringSnapshot(
         node.Info,
         await local.GetStatusAsync(ct),
-        watchdog.GetSnapshot(),
+        LocalWatchdogMonitoringSnapshot.From(watchdog.GetSnapshot()),
         DateTimeOffset.UtcNow));
 })
 .AllowAnonymous()

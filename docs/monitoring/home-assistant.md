@@ -4,7 +4,7 @@ TrustTunnelManager exposes an optional, read-only endpoint for Home Assistant:
 
 `GET /api/v1/monitoring/status`
 
-The endpoint returns only the local node identity, the existing TrustTunnel Client systemd snapshot, and the embedded VPN watchdog snapshot. It does not expose peer operations, logs, client configuration, or service-control actions.
+The endpoint returns only the local node identity, the existing TrustTunnel Client systemd snapshot, and the embedded VPN watchdog snapshot. It does not expose peer operations, logs, client configuration, or service-control actions. The watchdog state is returned as a stable string (for example, `Healthy`, `Degraded`, or `RestartFailed`).
 
 ## Enable on each Manager
 
