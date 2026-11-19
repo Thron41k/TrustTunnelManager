@@ -63,6 +63,12 @@ if (!string.IsNullOrWhiteSpace(monitoringApiToken) && monitoringApiToken.Length 
     throw new InvalidOperationException(
         "Monitoring:ApiToken должен содержать не менее 32 символов.");
 }
+var managementApiToken = builder.Configuration["Management:ApiToken"];
+if (!string.IsNullOrWhiteSpace(managementApiToken) && managementApiToken.Length < 32)
+{
+    throw new InvalidOperationException(
+        "Management:ApiToken должен содержать не менее 32 символов.");
+}
 if (string.IsNullOrWhiteSpace(adminUsername) || string.IsNullOrWhiteSpace(adminPassword) ||
     adminPassword.Length < 16)
 {
@@ -107,6 +113,17 @@ builder.Services.AddRateLimiter(options =>
             {
                 PermitLimit = 30,
                 Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                AutoReplenishment = true
+            }));
+    options.AddPolicy("management", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 3,
+                Window = TimeSpan.FromMinutes(5),
                 QueueLimit = 0,
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                 AutoReplenishment = true
@@ -366,6 +383,54 @@ app.MapGet("/api/v1/monitoring/status", async Task<IResult> (
 })
 .AllowAnonymous()
 .RequireRateLimiting("monitoring");
+
+app.MapPost("/api/v1/management/restart", async Task<IResult> (
+    HttpContext context,
+    ILocalTrustTunnelClientManager local,
+    LocalNodeIdentity node,
+    IAuditLog audit,
+    CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(managementApiToken))
+        return Results.NotFound();
+
+    const string bearerPrefix = "Bearer ";
+    var authorization = context.Request.Headers["Authorization"].ToString();
+    if (!context.Request.IsHttps ||
+        !authorization.StartsWith(bearerPrefix, StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.Unauthorized();
+    }
+
+    var suppliedToken = authorization[bearerPrefix.Length..].Trim();
+    var expectedHash = SHA256.HashData(Encoding.UTF8.GetBytes(managementApiToken));
+    var suppliedHash = SHA256.HashData(Encoding.UTF8.GetBytes(suppliedToken));
+    if (suppliedToken.Length == 0 ||
+        !CryptographicOperations.FixedTimeEquals(expectedHash, suppliedHash))
+    {
+        return Results.Unauthorized();
+    }
+
+    context.Response.Headers["Cache-Control"] = "no-store";
+    context.Response.Headers["Pragma"] = "no-cache";
+
+    // Deliberately hard-coded: HA cannot select a service or submit a command.
+    var result = await local.ExecuteAsync("restart", ct);
+    await audit.WriteAsync(new AuditEntry(
+        DateTimeOffset.UtcNow,
+        "homeassistant",
+        node.Info.NodeId,
+        node.Info.NodeId,
+        "service.restart",
+        result.Success,
+        result.Message), ct);
+
+    return Results.Json(result, statusCode: result.Success
+        ? StatusCodes.Status200OK
+        : StatusCodes.Status503ServiceUnavailable);
+})
+.AllowAnonymous()
+.RequireRateLimiting("management");
 
 app.MapPost("/internal/v1/service/{action}", async Task<IResult> (
     HttpContext context,
