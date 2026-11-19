@@ -57,6 +57,12 @@ builder.Services.AddAntiforgery(options =>
 
 var adminUsername = builder.Configuration["Admin:Username"];
 var adminPassword = builder.Configuration["Admin:Password"];
+var monitoringApiToken = builder.Configuration["Monitoring:ApiToken"];
+if (!string.IsNullOrWhiteSpace(monitoringApiToken) && monitoringApiToken.Length < 32)
+{
+    throw new InvalidOperationException(
+        "Monitoring:ApiToken должен содержать не менее 32 символов.");
+}
 if (string.IsNullOrWhiteSpace(adminUsername) || string.IsNullOrWhiteSpace(adminPassword) ||
     adminPassword.Length < 16)
 {
@@ -89,6 +95,17 @@ builder.Services.AddRateLimiter(options =>
             _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = 5,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                AutoReplenishment = true
+            }));
+    options.AddPolicy("monitoring", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 30,
                 Window = TimeSpan.FromMinutes(1),
                 QueueLimit = 0,
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
@@ -310,6 +327,45 @@ app.MapGet("/internal/v1/status", async Task<IResult> (
         await local.GetStatusAsync(ct),
         watchdog.GetSnapshot()));
 });
+
+app.MapGet("/api/v1/monitoring/status", async Task<IResult> (
+    HttpContext context,
+    ILocalTrustTunnelClientManager local,
+    ITrustTunnelWatchdogStatus watchdog,
+    LocalNodeIdentity node,
+    CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(monitoringApiToken))
+        return Results.NotFound();
+
+    const string bearerPrefix = "Bearer ";
+    var authorization = context.Request.Headers.Authorization.ToString();
+    if (!context.Request.IsHttps ||
+        !authorization.StartsWith(bearerPrefix, StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.Unauthorized();
+    }
+
+    var suppliedToken = authorization[bearerPrefix.Length..].Trim();
+    var expectedHash = SHA256.HashData(Encoding.UTF8.GetBytes(monitoringApiToken));
+    var suppliedHash = SHA256.HashData(Encoding.UTF8.GetBytes(suppliedToken));
+    if (suppliedToken.Length == 0 ||
+        !CryptographicOperations.FixedTimeEquals(expectedHash, suppliedHash))
+    {
+        return Results.Unauthorized();
+    }
+
+    context.Response.Headers.CacheControl = "no-store";
+    context.Response.Headers.Pragma = "no-cache";
+
+    return Results.Ok(new LocalNodeMonitoringSnapshot(
+        node.Info,
+        await local.GetStatusAsync(ct),
+        watchdog.GetSnapshot(),
+        DateTimeOffset.UtcNow));
+})
+.AllowAnonymous()
+.RequireRateLimiting("monitoring");
 
 app.MapPost("/internal/v1/service/{action}", async Task<IResult> (
     HttpContext context,
